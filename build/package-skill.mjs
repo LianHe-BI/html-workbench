@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url'
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const frontendRoot = path.join(projectRoot, 'service', 'public')
-const outputRoot = path.join(projectRoot, 'skill', 'open-html-editor')
+const outputRoot = path.join(projectRoot, 'skill', 'html-workbench')
 const outputScripts = path.join(outputRoot, 'scripts')
 const outputAssets = path.join(outputRoot, 'assets')
 

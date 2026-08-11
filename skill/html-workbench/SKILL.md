@@ -1,9 +1,9 @@
 ---
-name: open-html-editor
-description: Start or reuse the bundled local HTML workbench and return a visual editor URL for a local .html file. Use when the user asks to generate HTML and make it editable, convert an HTML page to an editable state, open a local HTML file in a visual editor, or continue AI and human editing against the same source file.
+name: html-workbench
+description: Start or reuse the bundled local HTML Workbench and return a visual editor URL for a local .html file. Use when the user asks to generate HTML and make it editable, convert an HTML page to an editable state, open a local HTML file in a visual editor, or continue AI and human editing against the same source file.
 ---
 
-# Open HTML Editor
+# HTML Workbench
 
 Open a complete local HTML document in the bundled GrapesJS workbench. Keep the source file as the shared source of truth for visual edits and later AI edits.
 

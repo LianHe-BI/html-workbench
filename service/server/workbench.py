@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any
 
 
-SERVICE_NAME = "grapesjs-html-workbench"
+SERVICE_NAME = "html-workbench"
 SERVICE_VERSION = "2.0.0"
 DEFAULT_PORT = 4317
 MAX_REQUEST_BYTES = 8 * 1024 * 1024
