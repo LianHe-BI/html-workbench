@@ -1,0 +1,4 @@
+interface:
+  display_name: "HTML Workbench"
+  short_description: "启动本地服务，将完整 HTML 页面转换为可视化可编辑页面"
+  default_prompt: "Use $html-workbench to open a local HTML file as an editable visual page."
