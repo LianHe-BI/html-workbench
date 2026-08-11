@@ -5,7 +5,8 @@ import { fileURLToPath } from 'node:url'
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const frontendRoot = path.join(projectRoot, 'service', 'public')
 const sourceSkill = path.join(projectRoot, 'skill', 'open-html-editor')
-const outputRoot = path.join(projectRoot, 'dist', 'open-html-editor')
+const distRoot = path.join(projectRoot, 'dist')
+const outputRoot = path.join(distRoot, 'skills', 'open-html-editor')
 const outputScripts = path.join(outputRoot, 'scripts')
 const outputAssets = path.join(outputRoot, 'assets')
 
@@ -36,9 +37,9 @@ async function bundleFrontend() {
 }
 
 async function main() {
-  if (!outputRoot.startsWith(path.join(projectRoot, 'dist') + path.sep)) throw new Error('Unsafe output directory')
+  if (!outputRoot.startsWith(distRoot + path.sep)) throw new Error('Unsafe output directory')
   const html = await bundleFrontend()
-  await rm(outputRoot, { recursive: true, force: true })
+  await rm(distRoot, { recursive: true, force: true })
   await mkdir(outputScripts, { recursive: true })
   await mkdir(outputAssets, { recursive: true })
   await cp(path.join(sourceSkill, 'SKILL.md'), path.join(outputRoot, 'SKILL.md'))

@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "node build/package-skill.mjs",
-    "serve": "python3 dist/open-html-editor/scripts/workbench.py serve",
+    "serve": "python3 dist/skills/open-html-editor/scripts/workbench.py serve",
     "test": "npm run build && python3 -m unittest discover -s tests -v"
   },
   "devDependencies": {

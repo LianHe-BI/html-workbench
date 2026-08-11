@@ -55,7 +55,7 @@ class BundleInspector(HTMLParser):
 
 class BundleTests(unittest.TestCase):
     def test_frontend_is_a_single_self_contained_html(self):
-        bundle = PROJECT_ROOT / "dist" / "open-html-editor" / "assets" / "workbench.html"
+        bundle = PROJECT_ROOT / "dist" / "skills" / "open-html-editor" / "assets" / "workbench.html"
         inspector = BundleInspector()
         inspector.feed(bundle.read_text(encoding="utf-8"))
         self.assertTrue(inspector.scripts)

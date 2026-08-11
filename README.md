@@ -8,7 +8,7 @@
 service/                 Python 服务与前端源码
 skill/open-html-editor/  Skill 指令与 UI 元数据
 build/                   构建脚本
-dist/open-html-editor/   可直接安装或复制的 Skill 产物
+dist/skills/open-html-editor/  可直接安装或复制的 Skill 产物
 tests/                   Python 服务测试
 ```
 
@@ -31,13 +31,13 @@ npm run build
 ## 独立运行服务
 
 ```bash
-python3 dist/open-html-editor/scripts/workbench.py serve
+python3 dist/skills/open-html-editor/scripts/workbench.py serve
 ```
 
 打开本地 HTML，并在服务未运行时自动启动：
 
 ```bash
-python3 dist/open-html-editor/scripts/workbench.py open /absolute/path/page.html
+python3 dist/skills/open-html-editor/scripts/workbench.py open /absolute/path/page.html
 ```
 
 命令输出 JSON，其中 `url` 是可直接访问的编辑地址。服务只监听 `127.0.0.1`，默认仅允许访问当前用户主目录内的 HTML 和相对资源。
