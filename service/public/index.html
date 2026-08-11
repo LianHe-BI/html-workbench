@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HTML 可视化编辑台</title>
+  <link rel="stylesheet" href="/vendor/grapesjs/css/grapes.min.css">
+  <link rel="stylesheet" href="/workbench.css">
+</head>
+<body>
+  <main class="workbench" data-grapesjs-workbench="true">
+    <header class="topbar" aria-label="编辑器工具栏">
+      <div class="toolbar-cluster file-cluster">
+        <button id="file-menu-button" class="file-menu-button" type="button" aria-expanded="false">
+          <span class="product-mark">HTML</span>
+          <strong id="file-name">未打开文件</strong>
+          <span id="status" class="sync-status" data-state="idle"><i></i><b>等待打开文件</b></span>
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m6.5 8 3.5 3.5L13.5 8"/></svg>
+        </button>
+        <div id="file-popover" class="file-popover" hidden>
+          <label for="file-input">本地 HTML 文件</label>
+          <div class="file-open-row">
+            <input id="file-input" aria-label="HTML 文件绝对路径" placeholder="/absolute/path/page.html">
+            <button id="open-button" type="button">打开</button>
+          </div>
+          <p>输入绝对路径，工作台会直接读取并同步保存。</p>
+        </div>
+      </div>
+
+      <div class="toolbar-cluster viewport-controls" aria-label="画布尺寸">
+        <button id="fit-button" class="fit-button active" type="button" aria-pressed="true">适应</button>
+        <button type="button" data-width="375">375</button>
+        <button type="button" data-width="768" class="active">768</button>
+        <button type="button" data-width="1280">1280</button>
+      </div>
+
+      <div class="toolbar-cluster actions">
+        <button id="undo-button" class="icon-button" type="button" aria-label="撤销" title="撤销">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7.5 5 3.5 9l4 4"/><path d="M4 9h7a5 5 0 0 1 5 5"/></svg>
+        </button>
+        <button id="redo-button" class="icon-button" type="button" aria-label="重做" title="重做">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m12.5 5 4 4-4 4"/><path d="M16 9H9a5 5 0 0 0-5 5"/></svg>
+        </button>
+        <button id="replace-image-button" class="icon-button" type="button" aria-label="替换图片" title="替换图片">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="3" y="4" width="14" height="12" rx="2"/><circle cx="7" cy="8" r="1.2"/><path d="m5 14 3.5-3.5 2.5 2 2-2 2 2"/></svg>
+        </button>
+        <button id="save-button" class="primary save-button" type="button">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 3h10l2 2v12H4z"/><path d="M7 3v5h6V3M7 17v-5h6v5"/></svg>
+          <span>保存</span>
+        </button>
+      </div>
+    </header>
+
+    <nav class="tool-rail" aria-label="编辑工具">
+      <button type="button" data-panel="blocks" aria-label="添加内容" title="添加内容">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12"/></svg>
+        <span>添加</span>
+      </button>
+      <button type="button" data-panel="styles" aria-label="调整样式" title="调整样式">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 6h8M15 6h1M4 14h1M8 14h8"/><circle cx="13.5" cy="6" r="1.5"/><circle cx="6.5" cy="14" r="1.5"/></svg>
+        <span>样式</span>
+      </button>
+    </nav>
+
+    <aside id="control-panel" class="control-panel" hidden>
+      <header class="panel-header">
+        <div><small>编辑工具</small><strong id="panel-title">添加内容</strong></div>
+        <div class="panel-actions">
+          <button id="pin-panel-button" class="icon-button" type="button" aria-label="固定面板" aria-pressed="false" title="固定面板">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m7 3 6 2-1 4 3 3-3 1-2 4-1-5-4-1 3-3z"/></svg>
+          </button>
+          <button id="close-panel-button" class="icon-button" type="button" aria-label="关闭面板" title="关闭面板">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15"/></svg>
+          </button>
+        </div>
+      </header>
+      <section class="panel-content" data-panel-content="blocks">
+        <p class="section-label">拖入画布</p>
+        <div id="blocks-panel"></div>
+      </section>
+      <section class="panel-content" data-panel-content="styles" hidden>
+        <p class="section-label">所选元素</p>
+        <div id="styles-panel"></div>
+        <section id="attributes-panel" class="attributes-panel" hidden>
+          <p class="section-label">元素属性</p>
+          <label>图片地址<input id="src-input"></label>
+          <label>替代文本<input id="alt-input"></label>
+          <label>链接地址<input id="href-input"></label>
+        </section>
+      </section>
+    </aside>
+
+    <section class="canvas-area">
+      <div id="canvas-stage" class="canvas-stage">
+        <div id="canvas-viewport" class="canvas-viewport" style="width:768px">
+          <div id="gjs"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+  <script src="/vendor/grapesjs/grapes.min.js"></script>
+  <script type="module" src="/workbench.js"></script>
+</body>
+</html>

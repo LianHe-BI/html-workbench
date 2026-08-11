@@ -1,0 +1,14 @@
+{
+  "name": "html-workbench-skill",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "node build/package-skill.mjs",
+    "serve": "python3 dist/open-html-editor/scripts/workbench.py serve",
+    "test": "npm run build && python3 -m unittest discover -s tests -v"
+  },
+  "devDependencies": {
+    "grapesjs": "0.23.4"
+  }
+}

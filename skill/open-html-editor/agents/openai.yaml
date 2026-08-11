@@ -1,0 +1,4 @@
+interface:
+  display_name: "HTML 可视化编辑器"
+  short_description: "启动本地服务，将 HTML 转换为可视化可编辑页面"
+  default_prompt: "Use $open-html-editor to open a local HTML file in the visual editor."
