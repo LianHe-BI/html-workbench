@@ -62,6 +62,17 @@ class ValidatorTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["info"][0]["rule"], "external-script-not-inspected")
 
+    def test_strict_single_file_mode_rejects_referenced_dependencies(self):
+        normal = validate_fixture("not-self-contained.html")
+        strict = validator.validate_file(FIXTURES / "not-self-contained.html", require_self_contained=True)
+        self.assertTrue(normal["ok"])
+        self.assertFalse(strict["ok"])
+        self.assertEqual(
+            {issue["rule"] for issue in strict["errors"]},
+            {"non-self-contained-resource"},
+        )
+        self.assertEqual(len(strict["errors"]), 5)
+
     def test_target_can_resolve_regular_html_id_with_hash_prefix(self):
         source = """<!doctype html><html><head></head><body><button data-target=\"#panel\">Open</button><div id=\"panel\"></div></body></html>"""
         result = validator.validate_source(source)
@@ -104,10 +115,18 @@ class ValidatorTests(unittest.TestCase):
             capture_output=True,
             text=True,
         )
+        strict = subprocess.run(
+            [sys.executable, str(MODULE_PATH), "--require-self-contained", str(FIXTURES / "not-self-contained.html")],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
         self.assertEqual(safe.returncode, 0)
         self.assertTrue(json.loads(safe.stdout)["ok"])
         self.assertEqual(invalid.returncode, 1)
         self.assertFalse(json.loads(invalid.stdout)["ok"])
+        self.assertEqual(strict.returncode, 1)
+        self.assertEqual(len(json.loads(strict.stdout)["errors"]), 5)
 
     def test_current_workbench_sample_is_accepted_with_css_warnings(self):
         result = validator.validate_file(PROJECT_ROOT / "tests" / "fixtures" / "sample.html")

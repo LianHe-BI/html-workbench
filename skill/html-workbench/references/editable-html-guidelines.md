@@ -2,6 +2,12 @@
 
 Read this reference before generating a page that will be opened in HTML Workbench, or when adapting an existing page whose JavaScript must survive visual rearrangement.
 
+## Default deliverable: one self-contained page
+
+Generate one complete `.html` file, not a directory-based web project. Put CSS in `<style>` and JavaScript in `<script>` inside the document. Use embedded SVG, CSS, or `data:` URLs for images and fonts when they are required for the page to render.
+
+Do not load runtime dependencies, fonts, stylesheets, scripts, or media from a CDN by default. Ordinary `<a href="https://...">` links are allowed because they are navigation, not page dependencies. If the user explicitly requests local images or a multi-file site, explain that the result is no longer strictly self-contained and validate it without `--require-self-contained`.
+
 ## Core contract
 
 Generate position-independent interactions:
@@ -51,7 +57,7 @@ These patterns depend on the DOM snapshot that existed during initialization. Dr
 
 After generating the page:
 
-1. Run `scripts/validate_html.py` and fix every error.
+1. Run `scripts/validate_html.py --require-self-contained` and fix every error.
 2. Review warnings and remove structural coupling when practical.
 3. Open the page in HTML Workbench.
 4. Move at least one interactive element in edit mode.

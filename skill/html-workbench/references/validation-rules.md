@@ -8,6 +8,8 @@ Run the validator with Python 3.9 or newer:
 
 It prints JSON and exits with `0` when no errors are present. Warnings and informational findings do not change the success exit code. An error exits with `1`.
 
+For a newly generated, single-file page, add `--require-self-contained`. It rejects referenced stylesheets, scripts, media, and CSS resources while still allowing normal external navigation links.
+
 ## Errors
 
 - `incomplete-document`: missing `html`, `head`, or `body`.
@@ -17,6 +19,7 @@ It prints JSON and exits with `0` when no errors are present. Warnings and infor
 - `missing-interaction-target`: `data-target` cannot resolve to an `id` or `data-wb-id`.
 - `dangerous-url`: an HTML URL attribute uses the `javascript:` scheme.
 - `file-unreadable`: the file is missing, unreadable, or not UTF-8.
+- `non-self-contained-resource`: only with `--require-self-contained`; a style, script, media, or CSS `url()` / `@import` points outside the HTML file.
 
 Fix all errors before opening the page in the workbench.
 

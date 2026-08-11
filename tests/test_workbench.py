@@ -1,4 +1,6 @@
+import contextlib
 import importlib.util
+import io
 import json
 import sys
 import tempfile
@@ -7,6 +9,8 @@ import unittest
 import urllib.error
 import urllib.parse
 import urllib.request
+from types import SimpleNamespace
+from unittest import mock
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -198,6 +202,47 @@ class HttpTests(unittest.TestCase):
         with urllib.request.urlopen(self.base + route, timeout=2) as response:
             self.assertEqual(response.read(), b"test-grapes.min.js")
             self.assertIn("immutable", response.headers["Cache-Control"])
+
+
+class OpenCommandTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.page = self.root / "page.html"
+        self.page.write_text(SAMPLE_HTML, encoding="utf-8")
+        self.args = SimpleNamespace(
+            file=str(self.page),
+            editor_root=str(self.root),
+            port=4317,
+            asset=None,
+            vendor_cache=str(self.root / "vendor"),
+            wait=0.2,
+        )
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def test_open_reuses_healthy_service_without_starting_again(self):
+        output = io.StringIO()
+        with mock.patch.object(workbench, "health", return_value={"service": workbench.SERVICE_NAME}), \
+             mock.patch.object(workbench, "start_detached") as start, \
+             contextlib.redirect_stdout(output):
+            self.assertEqual(workbench.command_open(self.args, MODULE_PATH), 0)
+        payload = json.loads(output.getvalue())
+        self.assertTrue(payload["reused"])
+        self.assertNotIn("pid", payload)
+        start.assert_not_called()
+
+    def test_open_starts_service_when_no_healthy_service_exists(self):
+        output = io.StringIO()
+        with mock.patch.object(workbench, "health", side_effect=[None, {"service": workbench.SERVICE_NAME}]), \
+             mock.patch.object(workbench, "start_detached", return_value=(12345, self.root / "service.log")) as start, \
+             contextlib.redirect_stdout(output):
+            self.assertEqual(workbench.command_open(self.args, MODULE_PATH), 0)
+        payload = json.loads(output.getvalue())
+        self.assertFalse(payload["reused"])
+        self.assertEqual(payload["pid"], 12345)
+        start.assert_called_once()
 
 
 if __name__ == "__main__":

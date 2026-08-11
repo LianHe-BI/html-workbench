@@ -29,6 +29,7 @@ class WorkbenchHtmlInspector(HTMLParser):
         self.workbench_ids: dict[str, list[int]] = {}
         self.targets: list[tuple[str, int]] = []
         self.unsafe_urls: list[tuple[str, str, int]] = []
+        self.resource_urls: list[tuple[str, str, str, int]] = []
         self.inline_blocks: dict[str, list[tuple[int, str]]] = {"script": [], "style": []}
         self.external_scripts: list[tuple[int, str]] = []
         self._active_block: dict[str, object] | None = None
@@ -49,10 +50,21 @@ class WorkbenchHtmlInspector(HTMLParser):
             value = attributes.get(name, "").strip()
             if value.lower().startswith("javascript:"):
                 self.unsafe_urls.append((name, value, line))
+        if tag == "link" and "stylesheet" in attributes.get("rel", "").lower().split():
+            self.add_resource_url(tag, "href", attributes.get("href", ""), line)
+        elif tag in {"audio", "embed", "iframe", "img", "script", "source", "track", "video"}:
+            self.add_resource_url(tag, "src", attributes.get("src", ""), line)
+            self.add_resource_url(tag, "srcset", attributes.get("srcset", ""), line)
+        elif tag == "object":
+            self.add_resource_url(tag, "data", attributes.get("data", ""), line)
         if tag == "script" and attributes.get("src"):
             self.external_scripts.append((line, attributes["src"]))
         if tag in self.inline_blocks and not (tag == "script" and attributes.get("src")):
             self._active_block = {"tag": tag, "line": line, "parts": []}
+
+    def add_resource_url(self, tag: str, attribute: str, value: str, line: int) -> None:
+        if value.strip():
+            self.resource_urls.append((tag, attribute, value.strip(), line))
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         self.handle_starttag(tag, attrs)
@@ -114,6 +126,8 @@ CSS_RULES = (
         "CSS 使用了位置选择器；元素拖动后视觉规则可能应用到其他节点。",
     ),
 )
+CSS_URL_PATTERN = re.compile(r"url\(\s*(['\"]?)(.*?)\1\s*\)", re.IGNORECASE)
+CSS_IMPORT_PATTERN = re.compile(r"@import\s+(?:url\(\s*)?(['\"]?)([^'\"\s;)]+)\1", re.IGNORECASE)
 
 
 def issue_for_match(severity: str, rule: str, message: str, base_line: int, source: str, offset: int) -> Issue:
@@ -129,7 +143,33 @@ def scan_blocks(blocks: Iterable[tuple[int, str]], rules: tuple[tuple[str, re.Pa
     return issues
 
 
-def validate_source(source: str, file_name: str = "<memory>") -> dict[str, object]:
+def is_self_contained_url(value: str) -> bool:
+    normalized = value.strip().lower()
+    return not normalized or normalized.startswith(("data:", "#", "about:blank"))
+
+
+def self_contained_issues(inspector: WorkbenchHtmlInspector) -> list[Issue]:
+    issues: list[Issue] = []
+    for tag, attribute, value, line in inspector.resource_urls:
+        if not is_self_contained_url(value):
+            issues.append(Issue("error", "non-self-contained-resource", line, f"<{tag}> 的 {attribute} 引用了外部资源：{value}"))
+    for base_line, source in inspector.inline_blocks["style"]:
+        import_spans: list[tuple[int, int]] = []
+        for match in CSS_IMPORT_PATTERN.finditer(source):
+            import_spans.append(match.span())
+            value = match.group(2)
+            if not is_self_contained_url(value):
+                issues.append(issue_for_match("error", "non-self-contained-resource", f"CSS @import 引用了外部资源：{value}", base_line, source, match.start()))
+        for match in CSS_URL_PATTERN.finditer(source):
+            if any(start <= match.start() < end for start, end in import_spans):
+                continue
+            value = match.group(2).strip()
+            if not is_self_contained_url(value):
+                issues.append(issue_for_match("error", "non-self-contained-resource", f"CSS url() 引用了外部资源：{value}", base_line, source, match.start()))
+    return issues
+
+
+def validate_source(source: str, file_name: str = "<memory>", require_self_contained: bool = False) -> dict[str, object]:
     inspector = WorkbenchHtmlInspector()
     parse_error: Exception | None = None
     try:
@@ -169,6 +209,8 @@ def validate_source(source: str, file_name: str = "<memory>") -> dict[str, objec
 
     issues.extend(scan_blocks(inspector.inline_blocks["script"], JS_RULES))
     issues.extend(scan_blocks(inspector.inline_blocks["style"], CSS_RULES))
+    if require_self_contained:
+        issues.extend(self_contained_issues(inspector))
     for line, url in inspector.external_scripts:
         issues.append(Issue("info", "external-script-not-inspected", line, f"外部脚本未做静态检查：{url}"))
 
@@ -188,7 +230,7 @@ def validate_source(source: str, file_name: str = "<memory>") -> dict[str, objec
     }
 
 
-def validate_file(path: Path) -> dict[str, object]:
+def validate_file(path: Path, require_self_contained: bool = False) -> dict[str, object]:
     target = path.expanduser().resolve()
     try:
         source = target.read_text(encoding="utf-8")
@@ -202,14 +244,15 @@ def validate_file(path: Path) -> dict[str, object]:
             "warnings": [],
             "info": [],
         }
-    return validate_source(source, str(target))
+    return validate_source(source, str(target), require_self_contained)
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Validate an HTML page for resilient HTML Workbench editing.")
     parser.add_argument("html_file", type=Path, help="Path to a complete UTF-8 HTML document")
+    parser.add_argument("--require-self-contained", action="store_true", help="Reject referenced styles, scripts, media, and CSS resources")
     args = parser.parse_args(argv)
-    result = validate_file(args.html_file)
+    result = validate_file(args.html_file, args.require_self_contained)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0 if result["ok"] else 1
 

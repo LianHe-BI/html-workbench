@@ -9,29 +9,30 @@ Open a complete local HTML document in the bundled GrapesJS workbench. Keep the 
 
 ## Workflow
 
-1. Resolve the target `.html` file to an absolute path. If the user also asked to generate the page, read `references/editable-html-guidelines.md`, then create a complete document containing `html`, `head`, and `body`. Generate position-independent interactions that use stable semantic markers, delegated events, and idempotent initialization.
-2. Resolve the directory containing this `SKILL.md`. Treat its `scripts/workbench.py` as the service entrypoint.
-3. Find Python 3 in this order:
+1. Resolve the target `.html` file to an absolute path. When the user asks to generate a page, read `references/editable-html-guidelines.md` and generate one complete, self-contained HTML document containing `html`, `head`, and `body`. Inline its CSS and JavaScript; embed required visual assets; do not create a multi-file web project or depend on a CDN unless the user explicitly asks for that trade-off.
+2. Generate position-independent interactions that use stable semantic markers, delegated events, and idempotent initialization. For a page with business JS, test the interaction in preview mode after opening it.
+3. Resolve the directory containing this `SKILL.md`. Treat its `scripts/workbench.py` as the service entrypoint and `scripts/validate_html.py` as the compatibility validator.
+4. Find Python 3 in this order:
    - Run `python3 --version`.
    - Run `python --version` if `python3` is unavailable.
    - On Windows, run `py -3 --version` if both commands are unavailable.
-4. Require Python 3.9 or newer. If no compatible interpreter exists, explain that the workbench needs Python 3.9+ and ask for confirmation before installing software. After confirmation, use the platform's normal trusted installer or package manager, then repeat the version check.
-5. Read `references/validation-rules.md`, then validate the page before opening it:
+5. Require Python 3.9 or newer. If no compatible interpreter exists, explain that the workbench needs Python 3.9+ and ask for confirmation before installing software. After confirmation, use the platform's normal trusted installer or package manager, then repeat the version check.
+6. Read `references/validation-rules.md`, then validate the page before opening it. For a newly generated default page, require one self-contained file:
 
 ```text
-<python> <skill-dir>/scripts/validate_html.py <absolute-html-path>
+<python> <skill-dir>/scripts/validate_html.py --require-self-contained <absolute-html-path>
 ```
 
-Fix every reported error. Review warnings and remove structural JS/CSS coupling when practical; if a warning is intentionally accepted, state the assumption. External-script findings require a real preview-mode interaction test.
-6. Run the entrypoint with the selected interpreter:
+For an existing page that intentionally has relative resources, omit `--require-self-contained` and clearly report that it is not a single-file deliverable. Fix every reported error. Review warnings and remove structural JS/CSS coupling when practical; if a warning is intentionally accepted, state the assumption.
+7. Always run `open` as the normal entrypoint. Do not run `serve` first: `open` checks the default local port, reuses a running HTML Workbench service when available, or starts it in the background when needed. It prints one JSON object containing the editor URL and whether the service was reused.
 
 ```text
 <python> <skill-dir>/scripts/workbench.py open <absolute-html-path>
 ```
 
-7. On the first run, allow the service to download the pinned GrapesJS assets. It verifies their SHA-256 hashes and caches them locally; later runs do not require network access. Do not download or inject an unverified substitute yourself.
-8. Read the JSON written to stdout. When `ok` is true, return `url` as a clickable link. Mention whether the existing service was reused only when that detail helps diagnose behavior.
-9. If startup fails, report the returned error and inspect the log path when one is provided. For `VENDOR_DOWNLOAD_FAILED`, explain that all configured sources were unreachable and ask the user to check the network before retrying. Do not replace the service with an ad-hoc server.
+8. On the first run, allow the service to download the pinned GrapesJS assets. It verifies their SHA-256 hashes and caches them locally; later runs do not require network access. Do not download or inject an unverified substitute yourself.
+9. Read the JSON written to stdout. When `ok` is true, open `url` in the available browser when browser control is available. In every final response, also return the URL as a clickable link, name the generated HTML file, and state whether the service was started or reused. If a browser cannot be opened automatically, tell the user to open that exact URL in any browser.
+10. If startup fails, report the returned error and inspect the log path when one is provided. For `VENDOR_DOWNLOAD_FAILED`, explain that all configured sources were unreachable and ask the user to check the network before retrying. Do not replace the service with an ad-hoc server.
 
 ## Service commands
 
@@ -40,6 +41,8 @@ Run the service independently in the foreground:
 ```text
 <python> <skill-dir>/scripts/workbench.py serve
 ```
+
+Use `serve` only when a user explicitly wants to manage the foreground service. For normal Skill use, run `open <html-file>` instead.
 
 Check an existing service:
 
