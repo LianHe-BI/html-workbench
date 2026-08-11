@@ -36,7 +36,9 @@ async function main() {
   await mkdir(outputScripts, { recursive: true })
   await mkdir(outputAssets, { recursive: true })
   await cp(path.join(projectRoot, 'service', 'server', 'workbench.py'), path.join(outputScripts, 'workbench.py'))
+  await cp(path.join(projectRoot, 'service', 'server', 'validate_html.py'), path.join(outputScripts, 'validate_html.py'))
   await chmod(path.join(outputScripts, 'workbench.py'), 0o755)
+  await chmod(path.join(outputScripts, 'validate_html.py'), 0o755)
   await writeFile(path.join(outputAssets, 'workbench.html'), html, 'utf8')
   process.stdout.write(`${JSON.stringify({ ok: true, output: outputRoot, bytes: Buffer.byteLength(html) })}\n`)
 }

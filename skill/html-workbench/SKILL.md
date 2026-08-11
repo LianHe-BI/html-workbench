@@ -9,22 +9,29 @@ Open a complete local HTML document in the bundled GrapesJS workbench. Keep the 
 
 ## Workflow
 
-1. Resolve the target `.html` file to an absolute path. If the user also asked to generate the page, create and verify a complete document containing `html`, `head`, and `body` before continuing.
+1. Resolve the target `.html` file to an absolute path. If the user also asked to generate the page, read `references/editable-html-guidelines.md`, then create a complete document containing `html`, `head`, and `body`. Generate position-independent interactions that use stable semantic markers, delegated events, and idempotent initialization.
 2. Resolve the directory containing this `SKILL.md`. Treat its `scripts/workbench.py` as the service entrypoint.
 3. Find Python 3 in this order:
    - Run `python3 --version`.
    - Run `python --version` if `python3` is unavailable.
    - On Windows, run `py -3 --version` if both commands are unavailable.
 4. Require Python 3.9 or newer. If no compatible interpreter exists, explain that the workbench needs Python 3.9+ and ask for confirmation before installing software. After confirmation, use the platform's normal trusted installer or package manager, then repeat the version check.
-5. Run the entrypoint with the selected interpreter:
+5. Read `references/validation-rules.md`, then validate the page before opening it:
+
+```text
+<python> <skill-dir>/scripts/validate_html.py <absolute-html-path>
+```
+
+Fix every reported error. Review warnings and remove structural JS/CSS coupling when practical; if a warning is intentionally accepted, state the assumption. External-script findings require a real preview-mode interaction test.
+6. Run the entrypoint with the selected interpreter:
 
 ```text
 <python> <skill-dir>/scripts/workbench.py open <absolute-html-path>
 ```
 
-6. On the first run, allow the service to download the pinned GrapesJS assets. It verifies their SHA-256 hashes and caches them locally; later runs do not require network access. Do not download or inject an unverified substitute yourself.
-7. Read the JSON written to stdout. When `ok` is true, return `url` as a clickable link. Mention whether the existing service was reused only when that detail helps diagnose behavior.
-8. If startup fails, report the returned error and inspect the log path when one is provided. For `VENDOR_DOWNLOAD_FAILED`, explain that all configured sources were unreachable and ask the user to check the network before retrying. Do not replace the service with an ad-hoc server.
+7. On the first run, allow the service to download the pinned GrapesJS assets. It verifies their SHA-256 hashes and caches them locally; later runs do not require network access. Do not download or inject an unverified substitute yourself.
+8. Read the JSON written to stdout. When `ok` is true, return `url` as a clickable link. Mention whether the existing service was reused only when that detail helps diagnose behavior.
+9. If startup fails, report the returned error and inspect the log path when one is provided. For `VENDOR_DOWNLOAD_FAILED`, explain that all configured sources were unreachable and ask the user to check the network before retrying. Do not replace the service with an ad-hoc server.
 
 ## Service commands
 

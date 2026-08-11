@@ -33,6 +33,14 @@ npm run setup-hooks
 
 ## 独立运行服务
 
+在打开工作台前检查 HTML 的可编辑兼容性：
+
+```bash
+python3 skill/html-workbench/scripts/validate_html.py /absolute/path/page.html
+```
+
+校验器只使用 Python 标准库。错误会返回非零退出码；结构耦合的 JS/CSS 作为警告输出，外部脚本作为需要实际预览验证的提示输出。规则和生成建议分别位于 Skill 的 `references/validation-rules.md` 与 `references/editable-html-guidelines.md`。
+
 ```bash
 python3 skill/html-workbench/scripts/workbench.py serve
 ```

@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>Safe interactive fixture</title>
+  <style>
+    .faq { display: grid; gap: 12px; }
+    .answer[hidden] { display: none; }
+  </style>
+</head>
+<body>
+  <main class="faq">
+    <button data-action="toggle" data-target="faq-answer-1">展开答案</button>
+    <div class="answer" data-wb-id="faq-answer-1" hidden>答案内容</div>
+  </main>
+  <script>
+    if (!window.__safeFixtureReady) {
+      window.__safeFixtureReady = true
+      document.addEventListener('click', (event) => {
+        const trigger = event.target.closest('[data-action="toggle"]')
+        if (!trigger) return
+        const target = document.querySelector(`[data-wb-id="${CSS.escape(trigger.dataset.target)}"]`)
+        if (target) target.hidden = !target.hidden
+      })
+    }
+  </script>
+</body>
+</html>

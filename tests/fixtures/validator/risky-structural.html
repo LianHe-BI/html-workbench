@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>Risky structural fixture</title>
+  <style>
+    .cards > article:nth-child(2) { border-color: red; }
+  </style>
+</head>
+<body>
+  <main class="cards">
+    <article class="card"><button class="button">First</button></article>
+    <article class="card"><button class="button">Second</button></article>
+  </main>
+  <output id="output"></output>
+  <script>
+    const selected = document.querySelector('.cards > article:nth-child(2)')
+    const first = document.querySelectorAll('.card')[0]
+    const title = selected.parentElement.children[0]
+    document.querySelectorAll('.button').forEach((button) => {
+      button.addEventListener('click', () => {
+        document.querySelector('#output').innerHTML = first.textContent + title.textContent
+      })
+    })
+  </script>
+</body>
+</html>
