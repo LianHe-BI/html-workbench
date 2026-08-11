@@ -1,5 +1,7 @@
 node_modules/
+dist/
 .discuss/
+.firecrawl/
 __pycache__/
 *.pyc
 *.log

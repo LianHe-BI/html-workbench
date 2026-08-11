@@ -54,19 +54,24 @@ class BundleInspector(HTMLParser):
 
 
 class BundleTests(unittest.TestCase):
-    def test_frontend_is_a_single_self_contained_html(self):
+    def test_frontend_keeps_only_vendor_assets_external(self):
         bundle = PROJECT_ROOT / "dist" / "skills" / "open-html-editor" / "assets" / "workbench.html"
         inspector = BundleInspector()
         inspector.feed(bundle.read_text(encoding="utf-8"))
         self.assertTrue(inspector.scripts)
-        self.assertFalse(any(script.get("src") for script in inspector.scripts))
-        self.assertFalse(any(link.get("rel") == "stylesheet" for link in inspector.links))
+        self.assertEqual(
+            [script.get("src") for script in inspector.scripts if script.get("src")],
+            ["/vendor/grapesjs/grapes.min.js"],
+        )
+        self.assertEqual(
+            [link.get("href") for link in inspector.links if link.get("rel") == "stylesheet"],
+            ["/vendor/grapesjs/css/grapes.min.css"],
+        )
         self.assertEqual(sorted(inspector.bundles), [
-            ("script", "grapesjs"),
             ("script", "workbench"),
-            ("style", "grapesjs"),
             ("style", "workbench"),
         ])
+        self.assertLess(bundle.stat().st_size, 100_000)
 
 
 class ParserTests(unittest.TestCase):
@@ -132,7 +137,12 @@ class HttpTests(unittest.TestCase):
         self.page.write_text(SAMPLE_HTML, encoding="utf-8")
         self.asset = self.root / "workbench.html"
         self.asset.write_text("<!doctype html><title>Workbench</title>", encoding="utf-8")
-        self.server = workbench.WorkbenchServer(("127.0.0.1", 0), self.asset, self.root)
+        self.vendor = {}
+        for name in workbench.VENDOR_ASSETS:
+            path = self.root / name
+            path.write_bytes(f"test-{name}".encode())
+            self.vendor[name] = path
+        self.server = workbench.WorkbenchServer(("127.0.0.1", 0), self.asset, self.root, self.vendor)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.base = f"http://127.0.0.1:{self.server.server_port}"
@@ -164,6 +174,12 @@ class HttpTests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as context:
             urllib.request.urlopen(self.base + f"/api/document?{query}", timeout=2)
         self.assertEqual(context.exception.code, 403)
+
+    def test_serves_vendor_assets_locally(self):
+        route = workbench.VENDOR_ASSETS["grapes.min.js"]["route"]
+        with urllib.request.urlopen(self.base + route, timeout=2) as response:
+            self.assertEqual(response.read(), b"test-grapes.min.js")
+            self.assertIn("immutable", response.headers["Cache-Control"])
 
 
 if __name__ == "__main__":

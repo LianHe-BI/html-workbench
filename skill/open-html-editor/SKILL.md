@@ -22,8 +22,9 @@ Open a complete local HTML document in the bundled GrapesJS workbench. Keep the 
 <python> <skill-dir>/scripts/workbench.py open <absolute-html-path>
 ```
 
-6. Read the JSON written to stdout. When `ok` is true, return `url` as a clickable link. Mention whether the existing service was reused only when that detail helps diagnose behavior.
-7. If startup fails, report the returned error and inspect the log path when one is provided. Do not replace the service with an ad-hoc server.
+6. On the first run, allow the service to download the pinned GrapesJS assets. It verifies their SHA-256 hashes and caches them locally; later runs do not require network access. Do not download or inject an unverified substitute yourself.
+7. Read the JSON written to stdout. When `ok` is true, return `url` as a clickable link. Mention whether the existing service was reused only when that detail helps diagnose behavior.
+8. If startup fails, report the returned error and inspect the log path when one is provided. For `VENDOR_DOWNLOAD_FAILED`, explain that all configured sources were unreachable and ask the user to check the network before retrying. Do not replace the service with an ad-hoc server.
 
 ## Service commands
 
@@ -47,4 +48,5 @@ Use `--port` only to avoid a confirmed port collision. Use `--editor-root` only 
 - Treat the specified HTML file as the source of truth. The workbench writes visual edits back to it.
 - Preserve external file changes with revision checks; never force an overwrite after a conflict.
 - Do not install Python or another runtime without explicit user confirmation.
+- Keep third-party assets pinned and hash-verified. The service tries a China-friendly npm mirror first and falls back to three public CDNs.
 - Return the URL instead of claiming the browser is editable before the health check and document load succeed.

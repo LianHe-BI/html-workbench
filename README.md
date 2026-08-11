@@ -8,17 +8,11 @@
 service/                 Python 服务与前端源码
 skill/open-html-editor/  Skill 指令与 UI 元数据
 build/                   构建脚本
-dist/skills/open-html-editor/  可直接安装或复制的 Skill 产物
+dist/skills/open-html-editor/  构建生成、可直接安装或复制的 Skill 产物（不提交）
 tests/                   Python 服务测试
 ```
 
 ## 开发与构建
-
-安装前端构建依赖：
-
-```bash
-npm install
-```
 
 生成独立 Skill：
 
@@ -26,7 +20,9 @@ npm install
 npm run build
 ```
 
-构建会把 GrapesJS、工作台样式和前端逻辑内联到一个 `workbench.html`，并复制无第三方依赖的 Python 服务。
+构建只把工作台自身的样式和逻辑内联到一个 `workbench.html`，并复制无第三方 Python 依赖的服务。GrapesJS 不再塞进 Skill：服务首次启动时会下载固定的 0.23.4 版本、校验 SHA-256 并放入用户缓存，后续离线复用。
+
+下载顺序优先考虑中国网络：先尝试 npmmirror 的 npm 包，再依次尝试 CDNJS、jsDelivr 和 UNPKG。浏览器始终从本机服务加载资源，不直接依赖远程 CDN。首次启动需要约 1.2–2.9 MB 下载流量；所有来源都失败时会给出明确错误，不会打开残缺页面。
 
 ## 独立运行服务
 
@@ -41,3 +37,5 @@ python3 dist/skills/open-html-editor/scripts/workbench.py open /absolute/path/pa
 ```
 
 命令输出 JSON，其中 `url` 是可直接访问的编辑地址。服务只监听 `127.0.0.1`，默认仅允许访问当前用户主目录内的 HTML 和相对资源。
+
+默认缓存位于 `~/.cache/html-workbench/vendor/`（Windows 使用本地应用数据目录）。可用 `--vendor-cache` 指定其他位置。

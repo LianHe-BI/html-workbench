@@ -6,12 +6,14 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import io
 import json
 import mimetypes
 import os
 import re
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import urllib.error
@@ -30,6 +32,29 @@ SERVICE_VERSION = "2.0.0"
 DEFAULT_PORT = 4317
 MAX_REQUEST_BYTES = 8 * 1024 * 1024
 SCRIPT_PATTERN = re.compile(r"^<script\b[\s\S]*</script\s*>$", re.IGNORECASE)
+GRAPESJS_VERSION = "0.23.4"
+VENDOR_ASSETS = {
+    "grapes.min.js": {
+        "route": "/vendor/grapesjs/grapes.min.js",
+        "archive": "package/dist/grapes.min.js",
+        "sha256": "66155421db3a640add8eaf77391b6a744d36af80833cd91d44f8d3220fb76231",
+        "content_type": "text/javascript; charset=utf-8",
+    },
+    "grapes.min.css": {
+        "route": "/vendor/grapesjs/css/grapes.min.css",
+        "archive": "package/dist/css/grapes.min.css",
+        "sha256": "fb55e939b3349c280d68c0617dc87e56baa3eab55ea56a1855db9f5efcc7268d",
+        "content_type": "text/css; charset=utf-8",
+    },
+}
+VENDOR_ARCHIVES = [
+    ("npmmirror", f"https://registry.npmmirror.com/grapesjs/-/grapesjs-{GRAPESJS_VERSION}.tgz"),
+]
+VENDOR_CDNS = [
+    ("cdnjs", f"https://cdnjs.cloudflare.com/ajax/libs/grapesjs/{GRAPESJS_VERSION}"),
+    ("jsdelivr", f"https://cdn.jsdelivr.net/npm/grapesjs@{GRAPESJS_VERSION}/dist"),
+    ("unpkg", f"https://unpkg.com/grapesjs@{GRAPESJS_VERSION}/dist"),
+]
 
 
 class WorkbenchError(Exception):
@@ -38,6 +63,106 @@ class WorkbenchError(Exception):
         self.code = code
         self.status = status
         self.extra = extra
+
+
+def default_vendor_cache() -> Path:
+    if os.name == "nt":
+        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+    else:
+        base = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
+    return base / "html-workbench" / "vendor" / "grapesjs" / GRAPESJS_VERSION
+
+
+def sha256_bytes(content: bytes) -> str:
+    return hashlib.sha256(content).hexdigest()
+
+
+def verify_vendor_content(name: str, content: bytes) -> bytes:
+    expected = str(VENDOR_ASSETS[name]["sha256"])
+    actual = sha256_bytes(content)
+    if actual != expected:
+        raise ValueError(f"{name} 校验失败（预期 {expected}，实际 {actual}）")
+    return content
+
+
+def download_bytes(url: str, limit: int = 5_000_000, timeout: float = 20.0) -> bytes:
+    request = urllib.request.Request(url, headers={"User-Agent": f"html-workbench/{SERVICE_VERSION}"})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        content = response.read(limit + 1)
+    if len(content) > limit:
+        raise ValueError(f"下载内容超过 {limit} 字节")
+    return content
+
+
+def vendor_from_archive(url: str) -> dict[str, bytes]:
+    archive = download_bytes(url)
+    files: dict[str, bytes] = {}
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as package:
+        members = {member.name: member for member in package.getmembers() if member.isfile()}
+        for name, metadata in VENDOR_ASSETS.items():
+            archive_name = str(metadata["archive"])
+            member = members.get(archive_name)
+            if member is None:
+                raise ValueError(f"压缩包缺少 {archive_name}")
+            source = package.extractfile(member)
+            if source is None:
+                raise ValueError(f"无法读取 {archive_name}")
+            files[name] = verify_vendor_content(name, source.read())
+    return files
+
+
+def vendor_from_cdn(base_url: str) -> dict[str, bytes]:
+    return {
+        name: verify_vendor_content(
+            name,
+            download_bytes(f"{base_url}/{'css/' if name.endswith('.css') else ''}{name}"),
+        )
+        for name in VENDOR_ASSETS
+    }
+
+
+def write_vendor_cache(cache_dir: Path, files: dict[str, bytes]) -> None:
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    for name, content in files.items():
+        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{name}.", dir=cache_dir)
+        try:
+            with os.fdopen(descriptor, "wb") as output:
+                output.write(content)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary_name, cache_dir / name)
+        finally:
+            if os.path.exists(temporary_name):
+                os.unlink(temporary_name)
+
+
+def ensure_vendor_assets(cache_dir: Path) -> dict[str, Path]:
+    paths = {name: cache_dir / name for name in VENDOR_ASSETS}
+    try:
+        for name, path in paths.items():
+            verify_vendor_content(name, path.read_bytes())
+        return paths
+    except (OSError, ValueError):
+        pass
+
+    failures: list[str] = []
+    sources = [
+        *((name, url, vendor_from_archive) for name, url in VENDOR_ARCHIVES),
+        *((name, url, vendor_from_cdn) for name, url in VENDOR_CDNS),
+    ]
+    for source_name, url, loader in sources:
+        try:
+            files = loader(url)
+            write_vendor_cache(cache_dir, files)
+            return paths
+        except (OSError, ValueError, tarfile.TarError, urllib.error.URLError) as caught:
+            failures.append(f"{source_name}: {caught}")
+    raise WorkbenchError(
+        "VENDOR_DOWNLOAD_FAILED",
+        "首次启动需要下载约 1.2 MB 的 GrapesJS，但所有下载源均不可用。请检查网络后重试。",
+        503,
+        attempts=failures,
+    )
 
 
 @dataclass
@@ -297,9 +422,11 @@ class WorkbenchServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, address: tuple[str, int], asset_file: Path, editor_root: Path) -> None:
+    def __init__(self, address: tuple[str, int], asset_file: Path, editor_root: Path, vendor_files: dict[str, Path]) -> None:
         self.asset_file = asset_file.resolve(strict=True)
         self.editor_root = editor_root.resolve(strict=True)
+        self.vendor_files = {name: path.resolve(strict=True) for name, path in vendor_files.items()}
+        self.vendor_routes = {str(metadata["route"]): name for name, metadata in VENDOR_ASSETS.items()}
         super().__init__(address, WorkbenchHandler)
 
 
@@ -354,6 +481,11 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                 return
             if parsed.path.startswith("/assets/"):
                 self.send_asset(parsed.path)
+                return
+            if parsed.path in self.server.vendor_routes:
+                name = self.server.vendor_routes[parsed.path]
+                metadata = VENDOR_ASSETS[name]
+                self.send_bytes(200, self.server.vendor_files[name].read_bytes(), str(metadata["content_type"]), "public, max-age=31536000, immutable")
                 return
             self.send_bytes(200, self.server.asset_file.read_bytes(), "text/html; charset=utf-8")
         except (BrokenPipeError, ConnectionResetError):
@@ -428,9 +560,9 @@ def health(port: int, timeout: float = 0.5) -> dict[str, Any] | None:
         return None
 
 
-def start_detached(script_file: Path, port: int, editor_root: Path, asset_file: Path | None) -> tuple[int, Path]:
+def start_detached(script_file: Path, port: int, editor_root: Path, asset_file: Path | None, vendor_cache: Path) -> tuple[int, Path]:
     log_file = Path(tempfile.gettempdir()) / f"html-workbench-{port}.log"
-    command = [sys.executable, str(script_file), "serve", "--port", str(port), "--editor-root", str(editor_root)]
+    command = [sys.executable, str(script_file), "serve", "--port", str(port), "--editor-root", str(editor_root), "--vendor-cache", str(vendor_cache)]
     if asset_file is not None:
         command.extend(["--asset", str(asset_file)])
     flags = 0
@@ -447,7 +579,8 @@ def start_detached(script_file: Path, port: int, editor_root: Path, asset_file: 
 def command_serve(args: argparse.Namespace, script_file: Path) -> int:
     asset_file = Path(args.asset).expanduser().resolve(strict=True) if args.asset else default_asset_file(script_file)
     editor_root = Path(args.editor_root).expanduser().resolve(strict=True)
-    server = WorkbenchServer(("127.0.0.1", args.port), asset_file, editor_root)
+    vendor_files = ensure_vendor_assets(Path(args.vendor_cache).expanduser())
+    server = WorkbenchServer(("127.0.0.1", args.port), asset_file, editor_root, vendor_files)
     print(json.dumps({"ok": True, "url": f"http://127.0.0.1:{args.port}", "editorRoot": str(editor_root)}, ensure_ascii=False), flush=True)
     try:
         server.serve_forever(poll_interval=0.25)
@@ -468,7 +601,7 @@ def command_open(args: argparse.Namespace, script_file: Path) -> int:
     log_file: Path | None = None
     if not reused:
         asset_file = Path(args.asset).expanduser().resolve(strict=True) if args.asset else None
-        pid, log_file = start_detached(script_file, args.port, editor_root, asset_file)
+        pid, log_file = start_detached(script_file, args.port, editor_root, asset_file, Path(args.vendor_cache).expanduser())
         deadline = time.monotonic() + args.wait
         while time.monotonic() < deadline:
             if health(args.port):
@@ -494,12 +627,14 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--port", type=int, default=DEFAULT_PORT)
     serve.add_argument("--editor-root", default=str(Path.home()))
     serve.add_argument("--asset", help="override the bundled workbench.html path")
+    serve.add_argument("--vendor-cache", default=str(default_vendor_cache()), help="directory for verified GrapesJS files")
 
     open_command = subparsers.add_parser("open", help="start or reuse the service and print an editor URL")
     open_command.add_argument("file")
     open_command.add_argument("--port", type=int, default=DEFAULT_PORT)
     open_command.add_argument("--editor-root", default=str(Path.home()))
     open_command.add_argument("--asset", help="override the bundled workbench.html path")
+    open_command.add_argument("--vendor-cache", default=str(default_vendor_cache()), help="directory for verified GrapesJS files")
     open_command.add_argument("--wait", type=float, default=8.0)
 
     health_command = subparsers.add_parser("health", help="check the local service")

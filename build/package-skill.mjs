@@ -15,24 +15,18 @@ function escapeInlineScript(source) {
 }
 
 async function bundleFrontend() {
-  const [template, workbenchCss, workbenchJs, grapesCss, grapesJs] = await Promise.all([
+  const [template, workbenchCss, workbenchJs] = await Promise.all([
     readFile(path.join(frontendRoot, 'index.html'), 'utf8'),
     readFile(path.join(frontendRoot, 'workbench.css'), 'utf8'),
     readFile(path.join(frontendRoot, 'workbench.js'), 'utf8'),
-    readFile(path.join(projectRoot, 'node_modules', 'grapesjs', 'dist', 'css', 'grapes.min.css'), 'utf8'),
-    readFile(path.join(projectRoot, 'node_modules', 'grapesjs', 'dist', 'grapes.min.js'), 'utf8'),
   ])
   const shell = template
-    .replace('<link rel="stylesheet" href="/vendor/grapesjs/css/grapes.min.css">', '<!-- GRAPES_CSS_BUNDLE -->')
     .replace('<link rel="stylesheet" href="/workbench.css">', '<!-- WORKBENCH_CSS_BUNDLE -->')
-    .replace('<script src="/vendor/grapesjs/grapes.min.js"></script>', '<!-- GRAPES_JS_BUNDLE -->')
     .replace('<script type="module" src="/workbench.js"></script>', '<!-- WORKBENCH_JS_BUNDLE -->')
-  const markers = ['GRAPES_CSS_BUNDLE', 'WORKBENCH_CSS_BUNDLE', 'GRAPES_JS_BUNDLE', 'WORKBENCH_JS_BUNDLE']
+  const markers = ['WORKBENCH_CSS_BUNDLE', 'WORKBENCH_JS_BUNDLE']
   if (!markers.every((marker) => shell.includes(`<!-- ${marker} -->`))) throw new Error('Frontend template is missing a bundle marker')
   return shell
-    .replace('<!-- GRAPES_CSS_BUNDLE -->', () => `<style data-bundle="grapesjs">\n${grapesCss}\n</style>`)
     .replace('<!-- WORKBENCH_CSS_BUNDLE -->', () => `<style data-bundle="workbench">\n${workbenchCss}\n</style>`)
-    .replace('<!-- GRAPES_JS_BUNDLE -->', () => `<script data-bundle="grapesjs">\n${escapeInlineScript(grapesJs)}\n</script>`)
     .replace('<!-- WORKBENCH_JS_BUNDLE -->', () => `<script type="module" data-bundle="workbench">\n${escapeInlineScript(workbenchJs)}\n</script>`)
 }
 
