@@ -4,9 +4,7 @@ import { fileURLToPath } from 'node:url'
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const frontendRoot = path.join(projectRoot, 'service', 'public')
-const sourceSkill = path.join(projectRoot, 'skill', 'open-html-editor')
-const distRoot = path.join(projectRoot, 'dist')
-const outputRoot = path.join(distRoot, 'skills', 'open-html-editor')
+const outputRoot = path.join(projectRoot, 'skill', 'open-html-editor')
 const outputScripts = path.join(outputRoot, 'scripts')
 const outputAssets = path.join(outputRoot, 'assets')
 
@@ -31,13 +29,12 @@ async function bundleFrontend() {
 }
 
 async function main() {
-  if (!outputRoot.startsWith(distRoot + path.sep)) throw new Error('Unsafe output directory')
+  if (!outputRoot.startsWith(path.join(projectRoot, 'skill') + path.sep)) throw new Error('Unsafe output directory')
   const html = await bundleFrontend()
-  await rm(distRoot, { recursive: true, force: true })
+  await rm(outputScripts, { recursive: true, force: true })
+  await rm(outputAssets, { recursive: true, force: true })
   await mkdir(outputScripts, { recursive: true })
   await mkdir(outputAssets, { recursive: true })
-  await cp(path.join(sourceSkill, 'SKILL.md'), path.join(outputRoot, 'SKILL.md'))
-  await cp(path.join(sourceSkill, 'agents'), path.join(outputRoot, 'agents'), { recursive: true })
   await cp(path.join(projectRoot, 'service', 'server', 'workbench.py'), path.join(outputScripts, 'workbench.py'))
   await chmod(path.join(outputScripts, 'workbench.py'), 0o755)
   await writeFile(path.join(outputAssets, 'workbench.html'), html, 'utf8')

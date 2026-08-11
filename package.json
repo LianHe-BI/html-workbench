@@ -6,8 +6,8 @@
   "scripts": {
     "build": "node build/package-skill.mjs",
     "setup-hooks": "git config core.hooksPath .githooks",
-    "check:dist": "npm run build && git diff --exit-code -- dist",
-    "serve": "python3 dist/skills/open-html-editor/scripts/workbench.py serve",
+    "check:skill": "npm run build && git diff --exit-code -- skill/open-html-editor",
+    "serve": "python3 skill/open-html-editor/scripts/workbench.py serve",
     "test": "npm run build && python3 -m unittest discover -s tests -v"
   }
 }
