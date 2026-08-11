@@ -8,7 +8,7 @@
 service/                 Python 服务与前端源码
 skill/open-html-editor/  Skill 指令与 UI 元数据
 build/                   构建脚本
-dist/skills/open-html-editor/  构建生成、可直接安装或复制的 Skill 产物（不提交）
+dist/skills/open-html-editor/  构建生成、可直接安装或复制的 Skill 产物（随源码提交）
 tests/                   Python 服务测试
 ```
 
@@ -19,6 +19,14 @@ tests/                   Python 服务测试
 ```bash
 npm run build
 ```
+
+首次克隆项目后启用仓库自带的提交前检查：
+
+```bash
+npm run setup-hooks
+```
+
+提交前检查会重新构建 `dist/skills/open-html-editor`。如果产物变化，提交会暂停；将最新的 `dist` 加入提交后重试即可。也可以随时运行 `npm run check:dist` 检查源码和分发成品是否一致。
 
 构建只把工作台自身的样式和逻辑内联到一个 `workbench.html`，并复制无第三方 Python 依赖的服务。GrapesJS 不再塞进 Skill：服务首次启动时会下载固定的 0.23.4 版本、校验 SHA-256 并放入用户缓存，后续离线复用。
 

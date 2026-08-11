@@ -75,6 +75,15 @@ class BundleTests(unittest.TestCase):
 
 
 class ParserTests(unittest.TestCase):
+    def test_fixture_contains_realistic_editable_sections(self):
+        fixture = (PROJECT_ROOT / "tests" / "fixtures" / "sample.html").read_text(encoding="utf-8")
+        document = workbench.parse_source(fixture)
+        self.assertIn("class=\"hero", document["bodyHtml"])
+        self.assertIn("class=\"bento", document["bodyHtml"])
+        self.assertIn("class=\"workflow", document["bodyHtml"])
+        self.assertIn("assets/workbench-studio.webp", document["bodyHtml"])
+        self.assertGreater(len(document["bodyHtml"]), 3_000)
+
     def test_extracts_document_context(self):
         document = workbench.parse_source(SAMPLE_HTML)
         self.assertEqual(document["htmlAttributes"]["lang"], "zh-CN")
