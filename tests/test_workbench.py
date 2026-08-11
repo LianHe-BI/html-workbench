@@ -73,6 +73,15 @@ class BundleTests(unittest.TestCase):
         ])
         self.assertLess(bundle.stat().st_size, 100_000)
 
+    def test_frontend_exposes_edit_and_preview_modes(self):
+        bundle = PROJECT_ROOT / "skill" / "html-workbench" / "assets" / "workbench.html"
+        source = bundle.read_text(encoding="utf-8")
+        self.assertIn('data-mode="edit"', source)
+        self.assertIn('data-mode="preview"', source)
+        self.assertIn('id="preview-frame"', source)
+        self.assertIn("previewFrame.srcdoc = buildPreviewDocument()", source)
+        self.assertIn("workbenchMode !== 'edit'", source)
+
 
 class ParserTests(unittest.TestCase):
     def test_fixture_contains_realistic_editable_sections(self):

@@ -1,6 +1,6 @@
 # HTML Workbench Skill
 
-把本地完整 HTML 页面放入 GrapesJS 可视化工作台，并把浏览器中的修改可靠地保存回原文件。最终可分发的 Skill 直接维护在 `skill/html-workbench/`；最终用户只需要 Python 3.9 或更高版本，不需要 Node.js、npm 或任何 pip 包。
+把本地完整 HTML 页面放入 GrapesJS 可视化工作台，并把浏览器中的修改可靠地保存回原文件。工作台可随时在编辑与交互预览之间切换，预览时页面内的链接和按钮会恢复正常响应。最终可分发的 Skill 直接维护在 `skill/html-workbench/`；最终用户只需要 Python 3.9 或更高版本，不需要 Node.js、npm 或任何 pip 包。
 
 ## 目录
 

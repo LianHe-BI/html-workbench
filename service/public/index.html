@@ -27,7 +27,10 @@
         </div>
       </div>
 
-      <div class="toolbar-cluster viewport-controls" aria-label="画布尺寸">
+      <div class="toolbar-cluster viewport-controls" aria-label="工作台模式和画布尺寸">
+        <button type="button" data-mode="edit" class="mode-button active" aria-pressed="true">编辑</button>
+        <button type="button" data-mode="preview" class="mode-button" aria-pressed="false">预览</button>
+        <span class="toolbar-separator" aria-hidden="true"></span>
         <button id="fit-button" class="fit-button active" type="button" aria-pressed="true">适应</button>
         <button type="button" data-width="375">375</button>
         <button type="button" data-width="768" class="active">768</button>
@@ -35,16 +38,16 @@
       </div>
 
       <div class="toolbar-cluster actions">
-        <button id="undo-button" class="icon-button" type="button" aria-label="撤销" title="撤销">
+        <button id="undo-button" class="icon-button edit-action" type="button" aria-label="撤销" title="撤销">
           <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7.5 5 3.5 9l4 4"/><path d="M4 9h7a5 5 0 0 1 5 5"/></svg>
         </button>
-        <button id="redo-button" class="icon-button" type="button" aria-label="重做" title="重做">
+        <button id="redo-button" class="icon-button edit-action" type="button" aria-label="重做" title="重做">
           <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m12.5 5 4 4-4 4"/><path d="M16 9H9a5 5 0 0 0-5 5"/></svg>
         </button>
-        <button id="replace-image-button" class="icon-button" type="button" aria-label="替换图片" title="替换图片">
+        <button id="replace-image-button" class="icon-button edit-action" type="button" aria-label="替换图片" title="替换图片">
           <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="3" y="4" width="14" height="12" rx="2"/><circle cx="7" cy="8" r="1.2"/><path d="m5 14 3.5-3.5 2.5 2 2-2 2 2"/></svg>
         </button>
-        <button id="save-button" class="primary save-button" type="button">
+        <button id="save-button" class="primary save-button edit-action" type="button">
           <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 3h10l2 2v12H4z"/><path d="M7 3v5h6V3M7 17v-5h6v5"/></svg>
           <span>保存</span>
         </button>
@@ -94,6 +97,7 @@
       <div id="canvas-stage" class="canvas-stage">
         <div id="canvas-viewport" class="canvas-viewport" style="width:768px">
           <div id="gjs"></div>
+          <iframe id="preview-frame" class="preview-frame" title="页面交互预览" hidden></iframe>
         </div>
       </div>
     </section>

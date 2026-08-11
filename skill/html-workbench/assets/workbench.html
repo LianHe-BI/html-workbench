@@ -107,6 +107,7 @@ button { -webkit-tap-highlight-color: transparent; }
 .file-popover p { margin: 9px 0 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
 
 .viewport-controls { flex: none; gap: 2px; }
+.toolbar-separator { width: 1px; height: 20px; margin: 0 3px; background: var(--line); }
 .toolbar-cluster button, .panel-actions button {
   min-height: 32px;
   border: 0;
@@ -122,6 +123,7 @@ button { -webkit-tap-highlight-color: transparent; }
 .toolbar-cluster button:active, .panel-actions button:active, .tool-rail button:active { transform: translateY(1px) scale(.98); }
 .toolbar-cluster button:focus-visible, .panel-actions button:focus-visible, .tool-rail button:focus-visible { outline: 2px solid #3f3f46; outline-offset: 2px; }
 .viewport-controls button { min-width: 42px; padding: 0 8px; }
+.viewport-controls .mode-button { min-width: 44px; }
 .viewport-controls .fit-button { min-width: 48px; }
 .viewport-controls button.active { color: #fff; background: var(--ink); box-shadow: 0 2px 7px rgba(24, 24, 27, .22); }
 .actions { flex: none; gap: 2px; }
@@ -189,10 +191,10 @@ button { -webkit-tap-highlight-color: transparent; }
 .panel-content { flex: 1; min-height: 0; overflow: auto; padding: 14px; }
 .section-label { margin: 0 0 10px; color: var(--muted); font-size: 9px; font-weight: 650; letter-spacing: .08em; }
 
-#blocks-panel { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; }
+#blocks-panel { display: block; }
 #blocks-panel .gjs-block-category { display: contents; }
 #blocks-panel .gjs-title { display: none; }
-#blocks-panel .gjs-blocks-c { display: contents; }
+#blocks-panel .gjs-blocks-c { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 #blocks-panel .gjs-block {
   width: auto;
   min-height: 64px;
@@ -229,6 +231,11 @@ button { -webkit-tap-highlight-color: transparent; }
   transition: padding-left .22s ease;
 }
 .workbench.panel-pinned .canvas-area { padding-left: 360px; }
+.workbench[data-mode="preview"] .tool-rail,
+.workbench[data-mode="preview"] .control-panel,
+.workbench[data-mode="preview"] .edit-action { display: none !important; }
+.workbench[data-mode="preview"] .canvas-area { padding-left: 12px; }
+.workbench[data-mode="preview"] .canvas-viewport { box-shadow: 0 12px 38px rgba(38, 38, 35, .1); }
 .canvas-stage { display: flex; justify-content: center; width: max-content; min-width: 100%; height: 100%; min-height: 320px; }
 .canvas-viewport {
   flex: none;
@@ -241,7 +248,9 @@ button { -webkit-tap-highlight-color: transparent; }
   box-shadow: 0 18px 50px rgba(38, 38, 35, .12);
   transform-origin: top center;
 }
-#gjs { height: 100%; }
+#gjs, .preview-frame { width: 100%; height: 100%; }
+.preview-frame { display: block; border: 0; background: #fff; }
+.workbench[data-mode="preview"] #gjs { display: none; }
 .gjs-one-bg { background-color: #fff; }
 .gjs-two-color { color: #3f3f46; }
 .gjs-three-bg { background-color: var(--ink); }
@@ -255,6 +264,7 @@ button { -webkit-tap-highlight-color: transparent; }
   .topbar { left: 54px; gap: 6px; }
   .file-cluster { max-width: 190px; }
   .viewport-controls button { min-width: 36px; padding-inline: 6px; }
+  .viewport-controls .mode-button { min-width: 38px; }
   .actions .save-button { min-width: 34px; padding: 0 8px; }
   .actions .save-button span { display: none; }
 }
@@ -262,6 +272,7 @@ button { -webkit-tap-highlight-color: transparent; }
 @media (max-width: 650px) {
   .file-cluster { max-width: 150px; }
   .viewport-controls [data-width="375"], .viewport-controls [data-width="1280"] { display: none; }
+  .toolbar-separator { margin-inline: 1px; }
   .actions #replace-image-button { display: none; }
 }
 
@@ -287,7 +298,10 @@ button { -webkit-tap-highlight-color: transparent; }
         </div>
       </div>
 
-      <div class="toolbar-cluster viewport-controls" aria-label="画布尺寸">
+      <div class="toolbar-cluster viewport-controls" aria-label="工作台模式和画布尺寸">
+        <button type="button" data-mode="edit" class="mode-button active" aria-pressed="true">编辑</button>
+        <button type="button" data-mode="preview" class="mode-button" aria-pressed="false">预览</button>
+        <span class="toolbar-separator" aria-hidden="true"></span>
         <button id="fit-button" class="fit-button active" type="button" aria-pressed="true">适应</button>
         <button type="button" data-width="375">375</button>
         <button type="button" data-width="768" class="active">768</button>
@@ -295,16 +309,16 @@ button { -webkit-tap-highlight-color: transparent; }
       </div>
 
       <div class="toolbar-cluster actions">
-        <button id="undo-button" class="icon-button" type="button" aria-label="撤销" title="撤销">
+        <button id="undo-button" class="icon-button edit-action" type="button" aria-label="撤销" title="撤销">
           <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7.5 5 3.5 9l4 4"/><path d="M4 9h7a5 5 0 0 1 5 5"/></svg>
         </button>
-        <button id="redo-button" class="icon-button" type="button" aria-label="重做" title="重做">
+        <button id="redo-button" class="icon-button edit-action" type="button" aria-label="重做" title="重做">
           <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m12.5 5 4 4-4 4"/><path d="M16 9H9a5 5 0 0 0-5 5"/></svg>
         </button>
-        <button id="replace-image-button" class="icon-button" type="button" aria-label="替换图片" title="替换图片">
+        <button id="replace-image-button" class="icon-button edit-action" type="button" aria-label="替换图片" title="替换图片">
           <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="3" y="4" width="14" height="12" rx="2"/><circle cx="7" cy="8" r="1.2"/><path d="m5 14 3.5-3.5 2.5 2 2-2 2 2"/></svg>
         </button>
-        <button id="save-button" class="primary save-button" type="button">
+        <button id="save-button" class="primary save-button edit-action" type="button">
           <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 3h10l2 2v12H4z"/><path d="M7 3v5h6V3M7 17v-5h6v5"/></svg>
           <span>保存</span>
         </button>
@@ -354,6 +368,7 @@ button { -webkit-tap-highlight-color: transparent; }
       <div id="canvas-stage" class="canvas-stage">
         <div id="canvas-viewport" class="canvas-viewport" style="width:768px">
           <div id="gjs"></div>
+          <iframe id="preview-frame" class="preview-frame" title="页面交互预览" hidden></iframe>
         </div>
       </div>
     </section>
@@ -383,6 +398,9 @@ const attributesPanel = document.querySelector('#attributes-panel')
 const srcInput = document.querySelector('#src-input')
 const altInput = document.querySelector('#alt-input')
 const hrefInput = document.querySelector('#href-input')
+const workbench = document.querySelector('.workbench')
+const modeButtons = [...document.querySelectorAll('[data-mode]')]
+const previewFrame = document.querySelector('#preview-frame')
 
 let editor
 let activeFile = ''
@@ -404,6 +422,7 @@ let canvasWidth = 768
 let fitCanvas = true
 let activePanel = ''
 let panelPinned = false
+let workbenchMode = 'edit'
 
 function setStatus(text, state = 'idle') {
   status.querySelector('b').textContent = text
@@ -447,6 +466,79 @@ function openPanel(name) {
   requestAnimationFrame(() => {
     updateCanvasScale()
     editor?.refresh()
+  })
+}
+
+function escapeAttribute(value) {
+  return String(value).replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+}
+
+function serializeAttributes(attributes = {}) {
+  return Object.entries(attributes).map(([name, value]) => ` ${name}="${escapeAttribute(value)}"`).join('')
+}
+
+function serializeHeadScript(source) {
+  return `<script${serializeAttributes(source.attributes)}>${source.content || ''}<\/script>`
+}
+
+function buildPreviewDocument() {
+  const previewBase = new URL(assetBase, location.origin).href
+  const stylesheets = links.map((href) => `<link rel="stylesheet" href="${escapeAttribute(href)}">`).join('\n')
+  const scripts = headScripts.map(serializeHeadScript).join('\n')
+  const overrideCss = editor.getCss()
+  const previewHelpers = `<script>
+document.addEventListener('click', function (event) {
+  const link = event.target.closest && event.target.closest('a[href^="#"]')
+  if (!link) return
+  const fragment = link.getAttribute('href').slice(1)
+  if (!fragment) return
+  const target = document.getElementById(decodeURIComponent(fragment))
+  if (!target) return
+  event.preventDefault()
+  target.scrollIntoView()
+}, false)
+<\/script>`
+  return `<!doctype html>
+<html${serializeAttributes(htmlAttributes)}>
+<head>
+  <meta charset="utf-8">
+  <base href="${escapeAttribute(previewBase)}">
+  ${stylesheets}
+  <style>${sourceCss}</style>
+  <style data-grapesjs-overrides>${overrideCss}</style>
+  ${scripts}
+</head>
+<body${serializeAttributes(bodyAttributes)}>
+${editor.getHtml()}
+${bodyScripts.join('\n')}
+${previewHelpers}
+</body>
+</html>`
+}
+
+function setWorkbenchMode(nextMode) {
+  if (!editor || nextMode === workbenchMode || !['edit', 'preview'].includes(nextMode)) return
+  workbenchMode = nextMode
+  const previewing = workbenchMode === 'preview'
+  workbench.dataset.mode = workbenchMode
+  modeButtons.forEach((button) => {
+    const active = button.dataset.mode === workbenchMode
+    button.classList.toggle('active', active)
+    button.setAttribute('aria-pressed', String(active))
+  })
+  if (previewing) {
+    closePanel()
+    setFilePopover(false)
+    editor.select(null)
+    previewFrame.srcdoc = buildPreviewDocument()
+    previewFrame.hidden = false
+  } else {
+    previewFrame.hidden = true
+    previewFrame.srcdoc = ''
+  }
+  requestAnimationFrame(() => {
+    updateCanvasScale()
+    editor.refresh()
   })
 }
 
@@ -525,10 +617,12 @@ async function injectSourceAssets() {
   if (!document.documentElement.dataset.workbenchInteractionBound) {
     document.documentElement.dataset.workbenchInteractionBound = 'true'
     document.addEventListener('click', (event) => {
+      if (workbenchMode !== 'edit') return
       const component = componentFromCanvasElement(event.target)
       if (component) editor.select(component)
     }, true)
     document.addEventListener('dblclick', (event) => {
+      if (workbenchMode !== 'edit') return
       const component = componentFromCanvasElement(event.target)
       if (!component) return
       editor.select(component)
@@ -587,7 +681,7 @@ function updateAttributePanel(component) {
 }
 
 function scheduleSave() {
-  if (applyingDocument || !activeFile) return
+  if (applyingDocument || workbenchMode !== 'edit' || !activeFile) return
   dirty = true
   setStatus('等待自动保存', 'dirty')
   clearTimeout(saveTimer)
@@ -699,6 +793,7 @@ document.querySelector('#open-button').addEventListener('click', () => loadFile(
 fileInput.addEventListener('keydown', (event) => { if (event.key === 'Enter') loadFile(fileInput.value.trim()) })
 fileMenuButton.addEventListener('click', () => setFilePopover(filePopover.hidden))
 panelButtons.forEach((button) => button.addEventListener('click', () => openPanel(button.dataset.panel)))
+modeButtons.forEach((button) => button.addEventListener('click', () => setWorkbenchMode(button.dataset.mode)))
 closePanelButton.addEventListener('click', closePanel)
 pinPanelButton.addEventListener('click', () => setPanelPinned(!panelPinned))
 document.querySelector('#undo-button').addEventListener('click', () => editor.UndoManager.undo())

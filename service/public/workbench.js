@@ -21,6 +21,9 @@ const attributesPanel = document.querySelector('#attributes-panel')
 const srcInput = document.querySelector('#src-input')
 const altInput = document.querySelector('#alt-input')
 const hrefInput = document.querySelector('#href-input')
+const workbench = document.querySelector('.workbench')
+const modeButtons = [...document.querySelectorAll('[data-mode]')]
+const previewFrame = document.querySelector('#preview-frame')
 
 let editor
 let activeFile = ''
@@ -42,6 +45,7 @@ let canvasWidth = 768
 let fitCanvas = true
 let activePanel = ''
 let panelPinned = false
+let workbenchMode = 'edit'
 
 function setStatus(text, state = 'idle') {
   status.querySelector('b').textContent = text
@@ -85,6 +89,79 @@ function openPanel(name) {
   requestAnimationFrame(() => {
     updateCanvasScale()
     editor?.refresh()
+  })
+}
+
+function escapeAttribute(value) {
+  return String(value).replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+}
+
+function serializeAttributes(attributes = {}) {
+  return Object.entries(attributes).map(([name, value]) => ` ${name}="${escapeAttribute(value)}"`).join('')
+}
+
+function serializeHeadScript(source) {
+  return `<script${serializeAttributes(source.attributes)}>${source.content || ''}</script>`
+}
+
+function buildPreviewDocument() {
+  const previewBase = new URL(assetBase, location.origin).href
+  const stylesheets = links.map((href) => `<link rel="stylesheet" href="${escapeAttribute(href)}">`).join('\n')
+  const scripts = headScripts.map(serializeHeadScript).join('\n')
+  const overrideCss = editor.getCss()
+  const previewHelpers = `<script>
+document.addEventListener('click', function (event) {
+  const link = event.target.closest && event.target.closest('a[href^="#"]')
+  if (!link) return
+  const fragment = link.getAttribute('href').slice(1)
+  if (!fragment) return
+  const target = document.getElementById(decodeURIComponent(fragment))
+  if (!target) return
+  event.preventDefault()
+  target.scrollIntoView()
+}, false)
+</script>`
+  return `<!doctype html>
+<html${serializeAttributes(htmlAttributes)}>
+<head>
+  <meta charset="utf-8">
+  <base href="${escapeAttribute(previewBase)}">
+  ${stylesheets}
+  <style>${sourceCss}</style>
+  <style data-grapesjs-overrides>${overrideCss}</style>
+  ${scripts}
+</head>
+<body${serializeAttributes(bodyAttributes)}>
+${editor.getHtml()}
+${bodyScripts.join('\n')}
+${previewHelpers}
+</body>
+</html>`
+}
+
+function setWorkbenchMode(nextMode) {
+  if (!editor || nextMode === workbenchMode || !['edit', 'preview'].includes(nextMode)) return
+  workbenchMode = nextMode
+  const previewing = workbenchMode === 'preview'
+  workbench.dataset.mode = workbenchMode
+  modeButtons.forEach((button) => {
+    const active = button.dataset.mode === workbenchMode
+    button.classList.toggle('active', active)
+    button.setAttribute('aria-pressed', String(active))
+  })
+  if (previewing) {
+    closePanel()
+    setFilePopover(false)
+    editor.select(null)
+    previewFrame.srcdoc = buildPreviewDocument()
+    previewFrame.hidden = false
+  } else {
+    previewFrame.hidden = true
+    previewFrame.srcdoc = ''
+  }
+  requestAnimationFrame(() => {
+    updateCanvasScale()
+    editor.refresh()
   })
 }
 
@@ -163,10 +240,12 @@ async function injectSourceAssets() {
   if (!document.documentElement.dataset.workbenchInteractionBound) {
     document.documentElement.dataset.workbenchInteractionBound = 'true'
     document.addEventListener('click', (event) => {
+      if (workbenchMode !== 'edit') return
       const component = componentFromCanvasElement(event.target)
       if (component) editor.select(component)
     }, true)
     document.addEventListener('dblclick', (event) => {
+      if (workbenchMode !== 'edit') return
       const component = componentFromCanvasElement(event.target)
       if (!component) return
       editor.select(component)
@@ -225,7 +304,7 @@ function updateAttributePanel(component) {
 }
 
 function scheduleSave() {
-  if (applyingDocument || !activeFile) return
+  if (applyingDocument || workbenchMode !== 'edit' || !activeFile) return
   dirty = true
   setStatus('等待自动保存', 'dirty')
   clearTimeout(saveTimer)
@@ -337,6 +416,7 @@ document.querySelector('#open-button').addEventListener('click', () => loadFile(
 fileInput.addEventListener('keydown', (event) => { if (event.key === 'Enter') loadFile(fileInput.value.trim()) })
 fileMenuButton.addEventListener('click', () => setFilePopover(filePopover.hidden))
 panelButtons.forEach((button) => button.addEventListener('click', () => openPanel(button.dataset.panel)))
+modeButtons.forEach((button) => button.addEventListener('click', () => setWorkbenchMode(button.dataset.mode)))
 closePanelButton.addEventListener('click', closePanel)
 pinPanelButton.addEventListener('click', () => setPanelPinned(!panelPinned))
 document.querySelector('#undo-button').addEventListener('click', () => editor.UndoManager.undo())
