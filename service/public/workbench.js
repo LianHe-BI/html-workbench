@@ -104,6 +104,14 @@ function serializeHeadScript(source) {
   return `<script${serializeAttributes(source.attributes)}>${source.content || ''}</script>`
 }
 
+function getBodyHtml() {
+  // GrapesJS 的 wrapper 组件 tagName 为 'body'，editor.getHtml() 返回
+  // <body>...</body>。服务端校验禁止 bodyHtml 包含 html/head/body/script
+  // 标签，预览文档也已有 <body> 包装，因此这里取 wrapper 的 innerHTML。
+  const wrapper = editor.getWrapper()
+  return wrapper.getInnerHTML ? wrapper.getInnerHTML() : editor.getHtml().replace(/^<body\b[^>]*>/i, '').replace(/<\/body>\s*$/i, '')
+}
+
 function buildPreviewDocument() {
   const previewBase = new URL(assetBase, location.origin).href
   const stylesheets = links.map((href) => `<link rel="stylesheet" href="${escapeAttribute(href)}">`).join('\n')
@@ -132,7 +140,7 @@ document.addEventListener('click', function (event) {
   ${scripts}
 </head>
 <body${serializeAttributes(bodyAttributes)}>
-${editor.getHtml()}
+${getBodyHtml()}
 ${bodyScripts.join('\n')}
 ${previewHelpers}
 </body>
@@ -261,6 +269,7 @@ function initEditor() {
     height: '100%',
     width: 'auto',
     storageManager: false,
+    jsInHtml: false,
     panels: { defaults: [] },
     blockManager: {
       appendTo: '#blocks-panel',
@@ -286,6 +295,11 @@ function initEditor() {
   window.__GRAPESJS_WORKBENCH__ = { editor }
   editor.on('load', () => void injectSourceAssets())
   editor.on('update', scheduleSave)
+  // GrapesJS 的 RTE 文本编辑走 storeData → sync:content（noCount:true）路径，
+  // 不触发 editor 的 'update' 事件（changesCount 不增加）。但组件模型的
+  // Backbone change 事件不受 noCount 影响，会转发为 component:update，
+  // 因此补充监听该事件以覆盖文本内容编辑场景。
+  editor.on('component:update', scheduleSave)
   editor.on('component:selected', updateAttributePanel)
 }
 
@@ -321,7 +335,7 @@ async function save() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         baseRevision: revision,
-        bodyHtml: editor.getHtml(),
+        bodyHtml: getBodyHtml(),
         css: editor.getCss(),
         bodyScripts,
       }),
