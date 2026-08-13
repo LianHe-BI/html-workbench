@@ -524,6 +524,45 @@ ${previewHelpers}
 </html>`
 }
 
+function stateSelectorFor(element) {
+  const id = element.getAttribute('id')
+  if (id) return `#${CSS.escape(id)}`
+  const workbenchId = element.getAttribute('data-wb-id')
+  if (workbenchId) return `[data-wb-id="${CSS.escape(workbenchId)}"]`
+  const mode = element.getAttribute('data-mode')
+  if (mode) return `[data-mode="${CSS.escape(mode)}"]`
+  return null
+}
+
+function syncPreviewStateToEditor() {
+  const previewDocument = previewFrame.contentDocument
+  const editDocument = editor?.Canvas.getDocument()
+  if (!previewDocument || !editDocument) return
+
+  // Preview contains runtime DOM while Edit is GrapesJS's source model. Only
+  // copy a narrow, semantic state allowlist for elements with stable identity;
+  // arbitrary runtime styles, animations and framework DOM must not leak into
+  // the editable source on every mode switch.
+  const stateAttributes = ['class', 'hidden', 'aria-selected', 'aria-expanded', 'aria-hidden']
+  previewDocument.querySelectorAll('[id], [data-wb-id], [data-mode]').forEach((previewElement) => {
+    const selector = stateSelectorFor(previewElement)
+    if (!selector) return
+    const editElement = editDocument.querySelector(selector)
+    const component = componentFromCanvasElement(editElement)
+    if (!component) return
+
+    const attributes = { ...component.getAttributes() }
+    for (const attribute of stateAttributes) {
+      if (previewElement.hasAttribute(attribute)) {
+        attributes[attribute] = previewElement.getAttribute(attribute) || ''
+      } else {
+        delete attributes[attribute]
+      }
+    }
+    component.setAttributes(attributes)
+  })
+}
+
 function setWorkbenchMode(nextMode) {
   if (!editor || nextMode === workbenchMode || !['edit', 'preview'].includes(nextMode)) return
   workbenchMode = nextMode
@@ -541,6 +580,7 @@ function setWorkbenchMode(nextMode) {
     previewFrame.srcdoc = buildPreviewDocument()
     previewFrame.hidden = false
   } else {
+    syncPreviewStateToEditor()
     previewFrame.hidden = true
     previewFrame.srcdoc = ''
   }
