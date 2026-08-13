@@ -85,6 +85,12 @@ class ValidatorTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["warnings"][0]["rule"], "non-stable-interaction-target")
 
+    def test_warns_about_inline_event_handlers(self):
+        source = """<!doctype html><html><head></head><body><button onclick=\"switchMode('daemon')\">Daemon</button></body></html>"""
+        result = validator.validate_source(source)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["warnings"][0]["rule"], "inline-event-handler")
+
     def test_empty_workbench_id_is_an_error(self):
         source = """<!doctype html><html><head></head><body><div data-wb-id></div></body></html>"""
         result = validator.validate_source(source)

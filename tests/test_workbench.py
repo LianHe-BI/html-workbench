@@ -138,6 +138,45 @@ class SaveTests(unittest.TestCase):
         self.assertIn("window.ready = true", source)
         self.assertNotEqual(current["revision"], updated["revision"])
 
+    def test_preserves_inline_event_attributes_stripped_by_grapesjs(self):
+        source = """<!doctype html>
+<html><head><title>Events</title></head><body>
+  <button id="switcher" onclick="switchMode('daemon')">Daemon</button>
+  <section data-mode="daemon"><p>Content</p></section>
+  <script>function switchMode() {}</script>
+</body></html>"""
+        self.page.write_text(source, encoding="utf-8")
+        current = workbench.read_document(self.page)
+        # Simulate GrapesJS serialization: component markup retains the element
+        # but silently drops its inline onclick attribute.
+        workbench.save_document(self.page, {
+            "baseRevision": current["revision"],
+            "bodyHtml": """
+  <button id=\"switcher\">Daemon</button>
+  <section data-mode=\"daemon\"><p>Edited content</p></section>
+""",
+            "css": "",
+            "bodyScripts": current["bodyScripts"],
+        })
+        saved = self.page.read_text(encoding="utf-8")
+        self.assertIn('onclick="switchMode(&#x27;daemon&#x27;)"', saved)
+        self.assertIn("Edited content", saved)
+
+    def test_does_not_restore_handler_when_source_element_was_deleted(self):
+        source = """<!doctype html>
+<html><head><title>Events</title></head><body>
+  <button id="removed" onclick="run()">Remove me</button>
+</body></html>"""
+        self.page.write_text(source, encoding="utf-8")
+        current = workbench.read_document(self.page)
+        workbench.save_document(self.page, {
+            "baseRevision": current["revision"],
+            "bodyHtml": "<main>Remaining content</main>",
+            "css": "",
+        })
+        saved = self.page.read_text(encoding="utf-8")
+        self.assertNotIn("onclick=", saved)
+
     def test_rejects_stale_revision(self):
         current = workbench.read_document(self.page)
         self.page.write_text(SAMPLE_HTML.replace("Hello", "External"), encoding="utf-8")

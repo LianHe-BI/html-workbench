@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import html
 import io
 import json
 import mimetypes
@@ -309,6 +310,101 @@ def parse_source(source: str) -> dict[str, Any]:
     }
 
 
+def inline_event_attributes(source: str) -> list[tuple[str, tuple[str, str] | None, tuple[int, ...], dict[str, str]]]:
+    """Extract body `on*` attributes with stable identity and structural fallback.
+
+    GrapesJS intentionally strips inline event attributes from component models.
+    The workbench keeps the original source as the behavioral authority, so these
+    attributes must survive a visual-only save. Prefer id/data-wb-id/data-mode;
+    the sibling-index path only applies when the element tree was not rearranged.
+    """
+    parser = SourceHtmlParser(f"<body>{source}</body>")
+    parser.feed(parser.source)
+    parser.close()
+    body = next((node for node in parser.nodes if node.tag == "body"), None)
+    if body is None:
+        return []
+
+    def path_for(node: HtmlNode) -> tuple[int, ...]:
+        path: list[int] = []
+        current = node
+        while current.parent is not None and current.parent is not body:
+            path.append(current.parent.children.index(current))
+            current = current.parent
+        path.append(body.children.index(current))
+        return tuple(reversed(path))
+
+    events: list[tuple[str, tuple[str, str] | None, tuple[int, ...], dict[str, str]]] = []
+    for node in parser.nodes:
+        if not node.is_inside(body):
+            continue
+        attrs = {name: value for name, value in node.attrs.items() if name.lower().startswith("on")}
+        if not attrs:
+            continue
+        identity = next(
+            ((name, node.attrs[name]) for name in ("id", "data-wb-id", "data-mode") if node.attrs.get(name)),
+            None,
+        )
+        events.append((node.tag, identity, path_for(node), attrs))
+    return events
+
+
+def restore_inline_event_attributes(body_html: str, source_body_html: str) -> str:
+    """Restore source inline handlers omitted by GrapesJS during serialization."""
+    source_events = inline_event_attributes(source_body_html)
+    if not source_events:
+        return body_html
+
+    parser = SourceHtmlParser(f"<body>{body_html}</body>")
+    parser.feed(parser.source)
+    parser.close()
+    body = next((node for node in parser.nodes if node.tag == "body"), None)
+    if body is None:
+        return body_html
+
+    def path_for(node: HtmlNode) -> tuple[int, ...]:
+        path: list[int] = []
+        current = node
+        while current.parent is not None and current.parent is not body:
+            path.append(current.parent.children.index(current))
+            current = current.parent
+        path.append(body.children.index(current))
+        return tuple(reversed(path))
+
+    by_identity: dict[tuple[str, str], list[HtmlNode]] = {}
+    by_path: dict[tuple[int, ...], HtmlNode] = {}
+    for node in parser.nodes:
+        if not node.is_inside(body):
+            continue
+        for name in ("id", "data-wb-id", "data-mode"):
+            if node.attrs.get(name):
+                by_identity.setdefault((name, node.attrs[name]), []).append(node)
+        by_path[path_for(node)] = node
+
+    additions: list[tuple[int, str]] = []
+    for tag, identity, path, attributes in source_events:
+        candidates = by_identity.get(identity, []) if identity else []
+        target = candidates[0] if len(candidates) == 1 else by_path.get(path)
+        if target is None or target.tag != tag:
+            continue
+        missing = {
+            name: value
+            for name, value in attributes.items()
+            if name.lower() not in {existing.lower() for existing in target.attrs}
+        }
+        if missing:
+            serialized = "".join(f' {name}="{html.escape(value, quote=True)}"' for name, value in missing.items())
+            additions.append((target.start_end - 1, serialized))
+
+    restored = body_html
+    # Offsets include the synthetic `<body>` prefix; apply from right to left.
+    synthetic_prefix = len("<body>")
+    for offset, serialized in sorted(additions, reverse=True):
+        index = offset - synthetic_prefix
+        restored = restored[:index] + serialized + restored[index:]
+    return restored
+
+
 def revision_of(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
@@ -382,6 +478,7 @@ def save_document(target: Path, body: dict[str, Any]) -> dict[str, Any]:
         raise WorkbenchError("REVISION_CONFLICT", "磁盘文件已被外部修改，未覆盖最新版。", 409, document=current)
 
     source = current["html"]
+    body_html = restore_inline_event_attributes(body_html, current["bodyHtml"])
     locations = current["locations"]
     override = f"<style data-grapesjs-overrides>\n{css}\n</style>\n"
     if locations["overrideStart"] is not None:

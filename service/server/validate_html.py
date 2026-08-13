@@ -32,6 +32,7 @@ class WorkbenchHtmlInspector(HTMLParser):
         self.resource_urls: list[tuple[str, str, str, int]] = []
         self.inline_blocks: dict[str, list[tuple[int, str]]] = {"script": [], "style": []}
         self.external_scripts: list[tuple[int, str]] = []
+        self.inline_event_handlers: list[tuple[str, int]] = []
         self._active_block: dict[str, object] | None = None
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
@@ -46,6 +47,9 @@ class WorkbenchHtmlInspector(HTMLParser):
             self.workbench_ids.setdefault(attributes["data-wb-id"], []).append(line)
         if "data-target" in attributes:
             self.targets.append((attributes["data-target"], line))
+        self.inline_event_handlers.extend(
+            (name, line) for name in attributes if name.startswith("on")
+        )
         for name in ("href", "src", "action", "formaction"):
             value = attributes.get(name, "").strip()
             if value.lower().startswith("javascript:"):
@@ -206,6 +210,14 @@ def validate_source(source: str, file_name: str = "<memory>", require_self_conta
 
     for attribute, value, line in inspector.unsafe_urls:
         issues.append(Issue("error", "dangerous-url", line, f"{attribute} 使用了不允许的 javascript: URL：{value}"))
+
+    for attribute, line in inspector.inline_event_handlers:
+        issues.append(Issue(
+            "warning",
+            "inline-event-handler",
+            line,
+            f"{attribute} 是内联事件属性；Workbench 会保留它，但建议改用 document 事件委托以适应可视化重排。",
+        ))
 
     issues.extend(scan_blocks(inspector.inline_blocks["script"], JS_RULES))
     issues.extend(scan_blocks(inspector.inline_blocks["style"], CSS_RULES))
