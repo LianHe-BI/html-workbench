@@ -58,7 +58,10 @@ body[data-hwb-dragging] { user-select: none; }
 .hwb-item-btn { border: 1px solid var(--dsw-alias-border-l2); background: transparent; color: var(--dsw-alias-label-secondary); border-radius: 6px; padding: 2px 9px; cursor: pointer; font-size: 12px; flex: none; }
 .hwb-item-btn:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
 .hwb-dockempty { padding: 14px; color: var(--dsw-alias-label-tertiary); text-align: center; font-size: 12px; }
-.hwb-trigger { position: fixed; top: 10px; right: 12px; z-index: 10000; width: 36px; height: 36px; border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-secondary); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; border-radius: 8px; pointer-events: auto; }
+/* Keep the trigger below the DSH session header's title row (~44px tall: 12px
+   padding + 32px min-height) so it never covers the right-aligned header
+   utilities — e.g. the "Session Log" button — when a session is open. */
+.hwb-trigger { position: fixed; top: 56px; right: 12px; z-index: 10000; width: 36px; height: 36px; border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-secondary); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; border-radius: 8px; pointer-events: auto; }
 .hwb-trigger:hover { color: var(--dsw-alias-label-primary); background: var(--dsw-alias-interactive-bg-hover); }
 `)
 

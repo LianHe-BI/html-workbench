@@ -50,7 +50,20 @@ Check an existing service:
 <python> <skill-dir>/scripts/workbench.py health
 ```
 
-Use `--port` only to avoid a confirmed port collision. Use `--editor-root` only when the target file is outside the current user's home directory and the user placed that location in scope.
+Use `--port` only to avoid a confirmed port collision. `--editor-root` is accepted for backward compatibility but no longer restricts which files the workbench may open; the service resolves any existing local `.html` file by absolute path.
+
+## Logs
+
+The service writes rotating logs to a fixed per-user directory (survives temp cleanup):
+
+```text
+~/.cache/html-workbench/logs/          # Windows: %LOCALAPPDATA%\html-workbench\logs
+```
+
+- `workbench-<port>.log` — structured log (timestamp, level, request path, error code/message, unhandled stack traces), rotated at 1 MB × 5 files. This is the file to check first when something fails.
+- `html-workbench-<port>.log` — raw stdout/stderr of the service process (startup JSON and anything not routed through the logger).
+
+Override the directory with `--log-dir` on `serve`/`open`.
 
 ## Safety and file behavior
 

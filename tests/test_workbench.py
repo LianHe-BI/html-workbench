@@ -227,14 +227,14 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(document["fileName"], "page.html")
 
-    def test_rejects_file_outside_root(self):
+    def test_serves_file_outside_editor_root(self):
         outside = Path(self.temp.name).parent / "outside-workbench.html"
         outside.write_text(SAMPLE_HTML, encoding="utf-8")
         self.addCleanup(lambda: outside.unlink(missing_ok=True))
         query = urllib.parse.urlencode({"file": str(outside)})
-        with self.assertRaises(urllib.error.HTTPError) as context:
-            urllib.request.urlopen(self.base + f"/api/document?{query}", timeout=2)
-        self.assertEqual(context.exception.code, 403)
+        status, document = self.read_json(f"/api/document?{query}")
+        self.assertEqual(status, 200)
+        self.assertEqual(document["fileName"], "outside-workbench.html")
 
     def test_serves_vendor_assets_locally(self):
         route = workbench.VENDOR_ASSETS["grapes.min.js"]["route"]
@@ -255,6 +255,7 @@ class OpenCommandTests(unittest.TestCase):
             port=4317,
             asset=None,
             vendor_cache=str(self.root / "vendor"),
+            log_dir=str(self.root / "logs"),
             wait=0.2,
         )
 
@@ -282,6 +283,24 @@ class OpenCommandTests(unittest.TestCase):
         self.assertFalse(payload["reused"])
         self.assertEqual(payload["pid"], 12345)
         start.assert_called_once()
+
+
+class LoggingTests(unittest.TestCase):
+    def test_default_log_dir_is_fixed_and_user_scoped(self):
+        log_dir = workbench.default_log_dir()
+        self.assertEqual(log_dir.name, "logs")
+        self.assertEqual(log_dir.parent.name, "html-workbench")
+        # Same project base as the vendor cache, so everything lives under one dir.
+        self.assertEqual(log_dir, workbench.default_vendor_cache().parents[2] / "logs")
+
+    def test_setup_logging_writes_rotating_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            port = 4399
+            logger = workbench.setup_logging(tmp, port)
+            logger.info("hello %s", "world")
+            log_file = Path(tmp) / f"workbench-{port}.log"
+            self.assertTrue(log_file.is_file())
+            self.assertIn("hello world", log_file.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ import hashlib
 import html
 import io
 import json
+import logging
 import mimetypes
 import os
 import re
@@ -22,6 +23,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
+from logging.handlers import RotatingFileHandler
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -72,6 +74,60 @@ def default_vendor_cache() -> Path:
     else:
         base = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
     return base / "html-workbench" / "vendor" / "grapesjs" / GRAPESJS_VERSION
+
+
+LOG_MAX_BYTES = 1_000_000
+LOG_BACKUP_COUNT = 5
+
+
+def default_log_dir() -> Path:
+    """Fixed per-user log directory (stable across runs; survives tmp cleanup)."""
+    if os.name == "nt":
+        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+    else:
+        base = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
+    return base / "html-workbench" / "logs"
+
+
+_logger: logging.Logger | None = None
+
+
+def get_logger() -> logging.Logger:
+    """Return the module logger, lazily initialised with a no-op handler.
+
+    Library callers and tests that never run `command_serve` still get a safe
+    logger; `setup_logging` attaches the rotating file handler when the service
+    actually starts.
+    """
+    global _logger
+    if _logger is None:
+        _logger = logging.getLogger(SERVICE_NAME)
+        _logger.setLevel(logging.INFO)
+        _logger.addHandler(logging.NullHandler())
+    return _logger
+
+
+def setup_logging(log_dir: Path | str, port: int | None = None) -> logging.Logger:
+    """Attach the rotating file handler and return the module logger."""
+    global _logger
+    directory = Path(log_dir).expanduser()
+    directory.mkdir(parents=True, exist_ok=True)
+    filename = f"workbench-{port}.log" if port is not None else "workbench.log"
+    handler = RotatingFileHandler(
+        directory / filename,
+        maxBytes=LOG_MAX_BYTES,
+        backupCount=LOG_BACKUP_COUNT,
+        encoding="utf-8",
+    )
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    logger = get_logger()
+    for existing in list(logger.handlers):
+        if isinstance(existing, RotatingFileHandler):
+            existing.close()
+            logger.removeHandler(existing)
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    return logger
 
 
 def sha256_bytes(content: bytes) -> str:
@@ -409,15 +465,7 @@ def revision_of(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
-def inside_root(target: Path, root: Path) -> bool:
-    try:
-        target.relative_to(root)
-        return True
-    except ValueError:
-        return False
-
-
-def resolve_html_file(raw_file: str, editor_root: Path) -> Path:
+def resolve_html_file(raw_file: str) -> Path:
     if not raw_file.strip():
         raise WorkbenchError("FILE_REQUIRED", "请通过 file 参数指定 HTML 文件。", 400)
     requested = Path(raw_file).expanduser()
@@ -427,8 +475,6 @@ def resolve_html_file(raw_file: str, editor_root: Path) -> Path:
         raise WorkbenchError("FILE_NOT_FOUND", f"找不到文件：{requested.resolve()}", 404) from caught
     if target.suffix.lower() != ".html":
         raise WorkbenchError("INVALID_DOCUMENT", "只支持本地 .html 文件。", 400)
-    if not inside_root(target, editor_root):
-        raise WorkbenchError("OUTSIDE_EDITOR_ROOT", f"文件不在允许目录中：{target}", 403)
     return target
 
 
@@ -532,7 +578,9 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def log_message(self, format_string: str, *args: Any) -> None:
-        sys.stderr.write(f"{self.log_date_time_string()} {format_string % args}\n")
+        message = format_string % args
+        get_logger().info("%s %s", self.log_date_time_string(), message)
+        sys.stderr.write(f"{self.log_date_time_string()} {message}\n")
 
     def send_bytes(self, status: int, content: bytes, content_type: str, cache: str = "no-store") -> None:
         self.send_response(status)
@@ -554,12 +602,14 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
 
     def send_error_payload(self, caught: Exception) -> None:
         if isinstance(caught, WorkbenchError):
+            get_logger().warning("request failed: %s (%s)", caught.code, caught)
             self.send_json(caught.status, {"error": caught.code, "message": str(caught), **caught.extra})
         else:
+            get_logger().exception("unhandled request error")
             self.send_json(500, {"error": "SERVER_ERROR", "message": str(caught)})
 
     def query_file(self, query: dict[str, list[str]]) -> Path:
-        return resolve_html_file(query.get("file", [""])[0], self.server.editor_root)
+        return resolve_html_file(query.get("file", [""])[0])
 
     def do_GET(self) -> None:
         parsed = urllib.parse.urlsplit(self.path)
@@ -617,11 +667,9 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
         if len(parts) < 4:
             raise WorkbenchError("INVALID_ASSET", "资源地址无效。", 400)
         token = parts[2]
-        source_file = resolve_html_file(decode_asset_token(token), self.server.editor_root)
+        source_file = resolve_html_file(decode_asset_token(token))
         relative = urllib.parse.unquote(parts[3])
         resource = (source_file.parent / relative).resolve(strict=True)
-        if not inside_root(resource, self.server.editor_root):
-            raise WorkbenchError("OUTSIDE_EDITOR_ROOT", "资源超出允许目录。", 403)
         content_type = mimetypes.guess_type(resource.name)[0] or "application/octet-stream"
         self.send_bytes(200, resource.read_bytes(), content_type, "private, max-age=60")
 
@@ -662,9 +710,11 @@ def health(port: int, timeout: float = 0.5) -> dict[str, Any] | None:
         return None
 
 
-def start_detached(script_file: Path, port: int, editor_root: Path, asset_file: Path | None, vendor_cache: Path) -> tuple[int, Path]:
-    log_file = Path(tempfile.gettempdir()) / f"html-workbench-{port}.log"
-    command = [sys.executable, str(script_file), "serve", "--port", str(port), "--editor-root", str(editor_root), "--vendor-cache", str(vendor_cache)]
+def start_detached(script_file: Path, port: int, editor_root: Path, asset_file: Path | None, vendor_cache: Path, log_dir: Path) -> tuple[int, Path]:
+    directory = Path(log_dir).expanduser()
+    directory.mkdir(parents=True, exist_ok=True)
+    log_file = directory / f"html-workbench-{port}.log"
+    command = [sys.executable, str(script_file), "serve", "--port", str(port), "--editor-root", str(editor_root), "--vendor-cache", str(vendor_cache), "--log-dir", str(directory)]
     if asset_file is not None:
         command.extend(["--asset", str(asset_file)])
     flags = 0
@@ -679,10 +729,12 @@ def start_detached(script_file: Path, port: int, editor_root: Path, asset_file: 
 
 
 def command_serve(args: argparse.Namespace, script_file: Path) -> int:
+    logger = setup_logging(args.log_dir, args.port)
     asset_file = Path(args.asset).expanduser().resolve(strict=True) if args.asset else default_asset_file(script_file)
     editor_root = Path(args.editor_root).expanduser().resolve(strict=True)
     vendor_files = ensure_vendor_assets(Path(args.vendor_cache).expanduser())
     server = WorkbenchServer(("127.0.0.1", args.port), asset_file, editor_root, vendor_files)
+    logger.info("service started: port=%s editorRoot=%s logDir=%s", args.port, editor_root, Path(args.log_dir).expanduser())
     print(json.dumps({"ok": True, "url": f"http://127.0.0.1:{args.port}", "editorRoot": str(editor_root)}, ensure_ascii=False), flush=True)
     try:
         server.serve_forever(poll_interval=0.25)
@@ -690,20 +742,21 @@ def command_serve(args: argparse.Namespace, script_file: Path) -> int:
         pass
     finally:
         server.server_close()
+        logger.info("service stopped: port=%s", args.port)
     return 0
 
 
 def command_open(args: argparse.Namespace, script_file: Path) -> int:
     target = Path(args.file).expanduser().resolve(strict=True)
     editor_root = Path(args.editor_root).expanduser().resolve(strict=True)
-    resolve_html_file(str(target), editor_root)
+    resolve_html_file(str(target))
     existing = health(args.port)
     reused = existing is not None
     pid: int | None = None
     log_file: Path | None = None
     if not reused:
         asset_file = Path(args.asset).expanduser().resolve(strict=True) if args.asset else None
-        pid, log_file = start_detached(script_file, args.port, editor_root, asset_file, Path(args.vendor_cache).expanduser())
+        pid, log_file = start_detached(script_file, args.port, editor_root, asset_file, Path(args.vendor_cache).expanduser(), Path(args.log_dir).expanduser())
         deadline = time.monotonic() + args.wait
         while time.monotonic() < deadline:
             if health(args.port):
@@ -730,6 +783,7 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--editor-root", default=str(Path.home()))
     serve.add_argument("--asset", help="override the bundled workbench.html path")
     serve.add_argument("--vendor-cache", default=str(default_vendor_cache()), help="directory for verified GrapesJS files")
+    serve.add_argument("--log-dir", default=str(default_log_dir()), help="directory for rotating service logs")
 
     open_command = subparsers.add_parser("open", help="start or reuse the service and print an editor URL")
     open_command.add_argument("file")
@@ -737,6 +791,7 @@ def build_parser() -> argparse.ArgumentParser:
     open_command.add_argument("--editor-root", default=str(Path.home()))
     open_command.add_argument("--asset", help="override the bundled workbench.html path")
     open_command.add_argument("--vendor-cache", default=str(default_vendor_cache()), help="directory for verified GrapesJS files")
+    open_command.add_argument("--log-dir", default=str(default_log_dir()), help="directory for rotating service logs")
     open_command.add_argument("--wait", type=float, default=8.0)
 
     health_command = subparsers.add_parser("health", help="check the local service")
