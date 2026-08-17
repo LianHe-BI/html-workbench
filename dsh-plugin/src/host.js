@@ -148,11 +148,28 @@ return {
       }
     }
 
+    const resolvePath = async (file) => {
+      if (typeof file !== 'string') return { ok: false, error: 'file is required' }
+      const trimmed = file.trim()
+      if (!trimmed) return { ok: true, empty: true, isHtml: false, exists: false }
+      if (!/\.html?$/i.test(trimmed)) return { ok: true, isHtml: false, exists: false }
+      if (!shell) return { ok: true, isHtml: true, exists: null }
+      const arg = JSON.stringify(trimmed)
+      const spec = shell.resolve({ command: 'python3 -c "import os,sys; sys.exit(0 if os.path.isfile(sys.argv[1]) else 1)" ' + arg, timeoutMs: 5000, stdoutMaxBytes: 1024 })
+      try {
+        const r = await shell.run(spec)
+        return { ok: true, isHtml: true, exists: !!(r && r.exitCode === 0) }
+      } catch (e) {
+        return { ok: true, isHtml: true, exists: null }
+      }
+    }
+
     // 动态传输：Package-private RPC（仅动态运行时存在 harness）。
     if (typeof harness !== 'undefined') {
       harness.handle('list', () => ({ ok: true, running: serviceRunning, owned: !!ownedProcess, port: PORT, assets: snapshot() }))
       harness.handle('status', async () => { const h = await health(); return { ok: !!h, running: !!h, owned: !!ownedProcess, port: PORT, info: h || null } })
       harness.handle('open', async (args) => openFile(args && args.file))
+      harness.handle('resolve', async (args) => resolvePath(args && args.file))
     }
 
     // 静态传输：HTTP 路由，供静态 client bundle（fetch）与直接浏览器访问使用。
@@ -193,6 +210,14 @@ return {
           sendJson(res, out.ok ? 200 : 400, out)
         },
       }), 'html-workbench: open route')
+      ctx.effect(() => webServer.register({
+        kind: 'exact',
+        path: '/html-workbench/resolve',
+        handler: async (req, res) => {
+          const out = await resolvePath(parseQuery(req).file)
+          sendJson(res, out.ok ? 200 : 400, out)
+        },
+      }), 'html-workbench: resolve route')
     }
 
     // 注册时主动拉起服务（异步，不阻塞 apply）。

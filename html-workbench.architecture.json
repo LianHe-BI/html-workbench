@@ -1,0 +1,303 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "HTML Workbench 架构",
+    "subtitle": "一套核心服务 · 两种分发形态 — Agent Skill 与 DeepSeek Harness 插件",
+    "output": "html-workbench-architecture.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/alienzhou/html-workbench",
+      "revision": "0b16a9ef214dde214c5f417c821febba2c62f18c"
+    }
+  },
+  "components": [
+    {
+      "id": "human",
+      "type": "external",
+      "label": "人",
+      "sublabel": "浏览器里可视化编辑",
+      "pos": [
+        565,
+        40
+      ],
+      "size": [
+        160,
+        56
+      ]
+    },
+    {
+      "id": "editor",
+      "type": "frontend",
+      "label": "编辑器前端",
+      "sublabel": "workbench.html · GrapesJS 0.23.4",
+      "pos": [
+        540,
+        160
+      ],
+      "size": [
+        210,
+        64
+      ],
+      "sources": [
+        {
+          "path": "service/public/workbench.js",
+          "label": "workbench.js"
+        }
+      ]
+    },
+    {
+      "id": "server",
+      "type": "backend",
+      "label": "本地服务",
+      "sublabel": "127.0.0.1:4317 · Python stdlib",
+      "pos": [
+        540,
+        320
+      ],
+      "size": [
+        210,
+        64
+      ],
+      "sources": [
+        {
+          "path": "service/server/workbench.py",
+          "line": 563,
+          "label": "WorkbenchServer"
+        }
+      ]
+    },
+    {
+      "id": "source",
+      "type": "database",
+      "label": "HTML 源文件",
+      "sublabel": "磁盘 .html · 单一事实源",
+      "pos": [
+        880,
+        320
+      ],
+      "size": [
+        170,
+        64
+      ]
+    },
+    {
+      "id": "cache",
+      "type": "database",
+      "label": "vendor 本地缓存",
+      "sublabel": "GrapesJS · SHA-256 校验",
+      "pos": [
+        880,
+        480
+      ],
+      "size": [
+        170,
+        60
+      ]
+    },
+    {
+      "id": "vendor",
+      "type": "cloud",
+      "label": "GrapesJS 包源",
+      "sublabel": "npmmirror tgz · CDN 回退",
+      "pos": [
+        1120,
+        480
+      ],
+      "size": [
+        170,
+        60
+      ]
+    },
+    {
+      "id": "skill",
+      "type": "backend",
+      "label": "HTML Workbench Skill",
+      "sublabel": "SKILL.md + scripts + assets",
+      "pos": [
+        250,
+        230
+      ],
+      "size": [
+        180,
+        64
+      ],
+      "sources": [
+        {
+          "path": "skill/html-workbench/SKILL.md",
+          "label": "SKILL.md"
+        }
+      ]
+    },
+    {
+      "id": "plugin",
+      "type": "backend",
+      "label": "DSH 插件",
+      "sublabel": "host.js 宿主 + 右侧栏 client",
+      "pos": [
+        250,
+        400
+      ],
+      "size": [
+        180,
+        64
+      ],
+      "sources": [
+        {
+          "path": "dsh-plugin/src/host.js",
+          "label": "host.js"
+        }
+      ]
+    },
+    {
+      "id": "agent",
+      "type": "external",
+      "label": "AI Agent",
+      "sublabel": "挂载 Skill",
+      "pos": [
+        20,
+        230
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "dsh",
+      "type": "external",
+      "label": "DeepSeek Harness",
+      "sublabel": "Cordis 插件宿主",
+      "pos": [
+        20,
+        400
+      ],
+      "size": [
+        150,
+        64
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "核心服务 Core",
+      "wraps": [
+        "editor",
+        "server"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "分发形态 Distribution",
+      "wraps": [
+        "skill",
+        "plugin"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "human-edit",
+      "from": "human",
+      "to": "editor",
+      "label": "编辑 / 预览",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 26
+    },
+    {
+      "id": "agent-skill",
+      "from": "agent",
+      "to": "skill",
+      "label": "挂载调用"
+    },
+    {
+      "id": "dsh-plugin",
+      "from": "dsh",
+      "to": "plugin",
+      "label": "装载插件"
+    },
+    {
+      "id": "skill-open",
+      "from": "skill",
+      "to": "server",
+      "label": "open 拉起 / 复用",
+      "variant": "emphasis"
+    },
+    {
+      "id": "plugin-spawn",
+      "from": "plugin",
+      "to": "server",
+      "label": "serve 托管生命周期",
+      "variant": "emphasis"
+    },
+    {
+      "id": "server-front",
+      "from": "server",
+      "to": "editor",
+      "label": "下发前端 · SSE",
+      "labelDx": -80
+    },
+    {
+      "id": "editor-api",
+      "from": "editor",
+      "to": "server",
+      "label": "/api/document",
+      "labelDx": 78,
+      "labelDy": 36
+    },
+    {
+      "id": "server-source",
+      "from": "server",
+      "to": "source",
+      "label": "读写 · revision 校验",
+      "variant": "emphasis",
+      "labelDy": -34
+    },
+    {
+      "id": "vendor-cache",
+      "from": "vendor",
+      "to": "cache",
+      "label": "首次下载",
+      "variant": "dashed"
+    },
+    {
+      "id": "cache-server",
+      "from": "cache",
+      "to": "server",
+      "label": "离线复用",
+      "variant": "dashed"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "核心服务 Core",
+      "items": [
+        "单一 Python 脚本，零第三方依赖，只监听 127.0.0.1",
+        "同一份 workbench.py 既是 HTTP 服务也是 CLI：open / serve / health",
+        "open 会探活并复用已跑起来的服务，避免重复启动"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "单一事实源",
+      "items": [
+        "磁盘上的 .html 是唯一持久化副本",
+        "保存前比对 revision，拒绝覆盖外部改动",
+        "SSE /api/events 把外部改动推给编辑器"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "两种分发形态",
+      "items": [
+        "Skill：挂在 Agent 上，按 SKILL.md 校验后调 open 返回编辑 URL",
+        "DSH 插件：装在 DeepSeek Harness，右侧栏 iframe 内嵌编辑器，卸载时停掉自己拉起的服务",
+        "两者各自随包分发一份 workbench.py + workbench.html，由构建脚本从 service/ 生成"
+      ]
+    }
+  ]
+}

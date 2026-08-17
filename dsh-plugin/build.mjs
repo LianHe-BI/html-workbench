@@ -27,11 +27,15 @@ const bundle = `window.__ModuleLoader__.load({
 
     // Closure symbols — the same names the dynamic runner injects.
     const React = require('react');
+    // Replace-on-insert (never bail when the id already exists): a stale
+    // stylesheet left over from a previous plugin generation would otherwise
+    // silently win and break the layout while the JS behaves correctly.
     const styles = {
       insert(css) {
         if (typeof document === 'undefined') return () => {};
         const id = 'html-workbench-dsh-plugin-styles';
-        if (document.getElementById(id)) return () => {};
+        const prev = document.getElementById(id);
+        if (prev && prev.parentNode) prev.parentNode.removeChild(prev);
         const el = document.createElement('style');
         el.id = id;
         el.textContent = css;
@@ -42,8 +46,11 @@ const bundle = `window.__ModuleLoader__.load({
     const host = {
       call(method, args) {
         const a = args || {};
-        let url = '/html-workbench/' + method;
-        if (method === 'open' && a.file) url += '?file=' + encodeURIComponent(a.file);
+        const params = Object.keys(a)
+          .filter((k) => a[k] !== undefined && a[k] !== null)
+          .map((k) => encodeURIComponent(k) + '=' + encodeURIComponent(String(a[k])))
+          .join('&');
+        const url = '/html-workbench/' + method + (params ? '?' + params : '');
         return fetch(url).then((r) => r.json());
       },
     };
