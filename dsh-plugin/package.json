@@ -1,0 +1,51 @@
+{
+  "name": "@vibe-x/dsh-html-workbench",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness 插件：在右侧栏预览并可视化编辑 agent 生成的 HTML（复用/拉起本地 html-workbench 服务）。",
+  "license": "MIT",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime"
+      ]
+    }
+  },
+  "files": [
+    "src",
+    "lib/client.js",
+    "scripts/workbench.py",
+    "assets/workbench.html",
+    "cordis.patch.yml",
+    "dsh.plugin.json"
+  ],
+  "scripts": {
+    "build": "node build.mjs",
+    "prepublishOnly": "node build.mjs"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "cordis",
+    "html",
+    "editor",
+    "workbench"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

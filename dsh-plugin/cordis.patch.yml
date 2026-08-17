@@ -1,0 +1,6 @@
+# HTML Workbench 插件层：给 DSH Web profile 增加右侧栏 HTML 预览/编辑面板。
+# 作为一层 profile 装载：一个 node half（拉起/复用 html-workbench 服务 + 资产追踪），
+# 加一个 client bundle（在浏览器里挂载右侧面板，无核心改动）。
+- insert:
+    - id: html-workbench
+      name: '@vibe-x/dsh-html-workbench'

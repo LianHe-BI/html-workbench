@@ -1,6 +1,7 @@
 node_modules/
 .discuss/
 .firecrawl/
+dsh-plugin-study/
 __pycache__/
 *.pyc
 *.log

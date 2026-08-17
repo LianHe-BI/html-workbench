@@ -1,0 +1,16 @@
+# 依赖与运行时产物
+node_modules/
+*.log
+
+# 构建产物（npm run build 从 src/ 和 ../service/ 生成；prepublishOnly 会自动构建）
+lib/
+scripts/
+assets/
+
+# Python 缓存
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# 系统杂项
+.DS_Store

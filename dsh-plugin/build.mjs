@@ -1,0 +1,90 @@
+/**
+ * Build the DSH plugin's distributable artifacts from `src/` and `service/`:
+ *
+ *   1. lib/client.js          — static client bundle (wraps src/client.js).
+ *   2. scripts/workbench.py   — copy of the Python service (self-contained).
+ *   3. assets/workbench.html  — the bundled frontend served by that service.
+ *
+ * Run via `npm run build` (or automatically as `prepublishOnly` before
+ * `npm publish`). The service copies come from the sibling `service/` source.
+ */
+import { readFileSync, writeFileSync, mkdirSync, copyFileSync, chmodSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
+import { dirname, resolve, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const here = dirname(fileURLToPath(import.meta.url))
+const projectRoot = resolve(here, '..')
+const PLUGIN_ID = '@vibe-x/dsh-html-workbench'
+
+// ── 1) client bundle ────────────────────────────────────────────────────────
+const body = readFileSync(resolve(here, 'src/client.js'), 'utf8')
+const bundle = `window.__ModuleLoader__.load({
+  id: ${JSON.stringify(PLUGIN_ID)},
+  factory: (require) => {
+    var module = { exports: {} };
+    var exports = module.exports;
+
+    // Closure symbols — the same names the dynamic runner injects.
+    const React = require('react');
+    const styles = {
+      insert(css) {
+        if (typeof document === 'undefined') return () => {};
+        const id = 'html-workbench-dsh-plugin-styles';
+        if (document.getElementById(id)) return () => {};
+        const el = document.createElement('style');
+        el.id = id;
+        el.textContent = css;
+        document.head.appendChild(el);
+        return () => { if (el.parentNode) el.parentNode.removeChild(el); };
+      },
+    };
+    const host = {
+      call(method, args) {
+        const a = args || {};
+        let url = '/html-workbench/' + method;
+        if (method === 'open' && a.file) url += '?file=' + encodeURIComponent(a.file);
+        return fetch(url).then((r) => r.json());
+      },
+    };
+
+    const plugin = (() => {
+      ${body}
+    })();
+
+    exports.inject = plugin.inject ?? [];
+    exports.apply = plugin.apply;
+    return module.exports;
+  },
+});
+`
+mkdirSync(resolve(here, 'lib'), { recursive: true })
+writeFileSync(resolve(here, 'lib/client.js'), bundle)
+
+// ── 2) copy the Python service ──────────────────────────────────────────────
+mkdirSync(resolve(here, 'scripts'), { recursive: true })
+copyFileSync(resolve(projectRoot, 'service/server/workbench.py'), resolve(here, 'scripts/workbench.py'))
+chmodSync(resolve(here, 'scripts/workbench.py'), 0o755)
+
+// ── 3) bundle the frontend ──────────────────────────────────────────────────
+async function bundleFrontend(frontendRoot) {
+  const [template, css, js] = await Promise.all([
+    readFile(join(frontendRoot, 'index.html'), 'utf8'),
+    readFile(join(frontendRoot, 'workbench.css'), 'utf8'),
+    readFile(join(frontendRoot, 'workbench.js'), 'utf8'),
+  ])
+  const shell = template
+    .replace('<link rel="stylesheet" href="/workbench.css">', '<!-- WORKBENCH_CSS_BUNDLE -->')
+    .replace('<script type="module" src="/workbench.js"></script>', '<!-- WORKBENCH_JS_BUNDLE -->')
+  const markers = ['WORKBENCH_CSS_BUNDLE', 'WORKBENCH_JS_BUNDLE']
+  if (!markers.every((m) => shell.includes(`<!-- ${m} -->`))) throw new Error('Frontend template is missing a bundle marker')
+  return shell
+    .replace('<!-- WORKBENCH_CSS_BUNDLE -->', () => `<style data-bundle="workbench">\n${css}\n</style>`)
+    .replace('<!-- WORKBENCH_JS_BUNDLE -->', () => `<script type="module" data-bundle="workbench">\n${js.replaceAll(/<\/script/gi, '<\\/script')}\n</script>`)
+}
+
+const html = await bundleFrontend(resolve(projectRoot, 'service/public'))
+mkdirSync(resolve(here, 'assets'), { recursive: true })
+writeFileSync(resolve(here, 'assets/workbench.html'), html)
+
+console.log('built lib/client.js (' + bundle.length + ' bytes), scripts/workbench.py, assets/workbench.html')
