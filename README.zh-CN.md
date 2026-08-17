@@ -14,6 +14,32 @@
 
 > **HTML Workbench 不是 HTML 生成器。** 你可以用任何喜欢的方式生成 HTML：让任意 AI、设计工具、模板或手写代码产出文件；HTML Workbench 负责把这份现成的 HTML 转换为支持可视化编辑、预览，以及与 AI 实时协同修改的文档。
 
+## DeepSeek Harness 插件
+
+HTML Workbench 同时也是 [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness)（这款工具所依托的 Agent 运行框架）的一等插件，以 [`@vibe-x/dsh-html-workbench`](./dsh-plugin/) 发布。DeepSeek Harness 内置插件系统，本插件把可视化编辑器直接嵌进它的 Web 界面右侧栏：无需另开浏览器窗口，也无需手动执行 `open` 命令。
+
+当 Agent 通过 `write` / `edit` 工具创建或修改 `.html` 文件时，面板会自动追踪这些文件。点开其中一个，即可在内嵌的 GrapesJS 编辑器里改文案、图片、布局和样式；切到**预览**验证交互，再点**保存**把结果写回同一个源文件。
+
+### 安装
+
+前置：已装好 [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness) 且 `dsh web` 能正常运行，Node.js ≥ 20，Python 3.9+。
+
+```bash
+dsh plugin --profile web add @vibe-x/dsh-html-workbench
+```
+
+装完重启 `dsh web` 并硬刷新浏览器（Cmd/Ctrl+Shift+R），Web 界面右上角会出现触发按钮。
+
+### 使用
+
+1. 让 Agent 在工作区创建或修改一个 `.html` 文件，插件会自动捕获它。
+2. 点击右上角触发按钮打开面板，选择文件后即在内嵌编辑器中载入。
+3. 在**编辑**模式下调整，在**预览**模式验证交互，最后**保存**写回原文件。
+
+插件会复用本机已运行的 HTML Workbench 服务，没有则自动后台拉起一个；插件卸载时再停掉它自己启动的那个进程。全程只跑在 `127.0.0.1`。
+
+> **开发：** 插件源码在 [`dsh-plugin/`](./dsh-plugin/)。用 `node dsh-plugin/build.mjs`（或 `cd dsh-plugin && npm run build`）构建可分发的产物（client bundle、打包后的 Python 服务与前端）。
+
 ## 它解决什么问题
 
 - 不再在聊天窗口里反复描述“标题往下 20 像素”。
@@ -86,7 +112,7 @@ python3 skill/html-workbench/scripts/workbench.py serve
 
 ## 开发与打包
 
-源码保留在 `service/`、`build/` 和 `tests/`；可分发 Skill 始终维护在 `skill/html-workbench/`。
+源码保留在 `service/`、`build/` 和 `tests/`；可分发 Skill 始终维护在 `skill/html-workbench/`，DeepSeek Harness 插件在 `dsh-plugin/`。
 
 ```bash
 npm run build

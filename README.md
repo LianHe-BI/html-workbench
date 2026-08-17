@@ -14,6 +14,32 @@ The workflow is simple: create a page with the tool you prefer, refine copy, ima
 
 > **HTML Workbench is not an HTML generator.** Create HTML however you prefer—with any AI, design tool, template, or hand-written code—then give that file to HTML Workbench. It turns the existing document into a visual editor with preview and real-time collaboration against the same source file.
 
+## DeepSeek Harness plugin
+
+HTML Workbench is also a first-class plugin for [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness) — the agent harness this tooling plugs into — published as [`@vibe-x/dsh-html-workbench`](./dsh-plugin/). DeepSeek Harness ships a built-in plugin system, and this plugin brings the visual editor straight into its web UI's right sidebar: no separate browser window and no manual `open` command.
+
+As the agent creates or edits `.html` files (through the `write` / `edit` tools), the panel tracks them automatically. Open one to edit copy, images, layout, and styles in the embedded GrapesJS editor, switch to **Preview** to test interactions, then **Save** to write the result back to the same source file.
+
+### Install
+
+Prerequisites: [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness) installed and `dsh web` running, Node.js ≥ 20, and Python 3.9+.
+
+```bash
+dsh plugin --profile web add @vibe-x/dsh-html-workbench
+```
+
+Restart `dsh web` and hard-refresh the browser (Cmd/Ctrl+Shift+R). A trigger button appears in the top-right of the web UI.
+
+### Use
+
+1. Ask the agent to create or edit an `.html` file in the workspace. The plugin picks it up automatically.
+2. Click the top-right trigger to open the panel and choose a file; it loads in the embedded editor.
+3. Edit in **Edit** mode, verify interactions in **Preview**, then **Save** to write back to the original file.
+
+The plugin reuses a running local HTML Workbench service when one exists, or starts one in the background — and stops the process it started when the plugin unloads. Everything stays on `127.0.0.1`.
+
+> **Development:** the plugin source lives in [`dsh-plugin/`](./dsh-plugin/). Build its distributable artifacts (client bundle, bundled Python service, frontend) with `node dsh-plugin/build.mjs`, or `cd dsh-plugin && npm run build`.
+
 ## What it solves
 
 - Avoid repeated chat-based requests such as “move this title down by 20 pixels.”
@@ -86,7 +112,7 @@ Read the [generation guide](./skill/html-workbench/references/editable-html-guid
 
 ## Development and packaging
 
-Source code stays in `service/`, `build/`, and `tests/`; the distributable Skill is maintained in `skill/html-workbench/`.
+Source code stays in `service/`, `build/`, and `tests/`; the distributable Skill is maintained in `skill/html-workbench/`, and the DeepSeek Harness plugin in `dsh-plugin/`.
 
 ```bash
 npm run build
