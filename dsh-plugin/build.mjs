@@ -51,7 +51,26 @@ const bundle = `window.__ModuleLoader__.load({
           .map((k) => encodeURIComponent(k) + '=' + encodeURIComponent(String(a[k])))
           .join('&');
         const url = '/html-workbench/' + method + (params ? '?' + params : '');
-        return fetch(url).then((r) => r.json());
+        // A browser client may update before DSH reloads the Node-side host. An
+        // old host does not know newer routes (e.g. diagnostics/restart) and
+        // falls through to the SPA HTML shell. Never expose that as the useless
+        // Do not expose a raw JSON parse error; name the version mismatch and
+        // tell the user to restart the DSH host process.
+        return fetch(url).then(async (response) => {
+          const text = await response.text();
+          const contentType = response.headers.get('content-type') || '';
+          if (!contentType.includes('application/json')) {
+            const staleHost = /<!doctype html|<html[\s>]/i.test(text);
+            throw new Error(staleHost
+              ? 'HTML Workbench 的界面已更新，但 DSH 后台仍是旧版本，暂不支持「' + method + '」。请完全重启 DSH 后重试。'
+              : '本地服务返回了非 JSON 响应（HTTP ' + response.status + '）。');
+          }
+          try {
+            return JSON.parse(text);
+          } catch (error) {
+            throw new Error('本地服务返回了无法解析的 JSON（HTTP ' + response.status + '）。');
+          }
+        });
       },
     };
 
