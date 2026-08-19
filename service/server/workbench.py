@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import bisect
 import hashlib
 import html
 import io
@@ -13,10 +14,12 @@ import logging
 import mimetypes
 import os
 import re
+import signal
 import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -31,10 +34,44 @@ from typing import Any
 
 
 SERVICE_NAME = "html-workbench"
-SERVICE_VERSION = "2.0.0"
+SERVICE_VERSION = "2.1.0"
+
 DEFAULT_PORT = 4317
+# Capability names advertised by /api/health. `command_open` refuses to reuse a
+# service that lacks any of these: a long-lived process keeps running the code it
+# was started with, while the HTML/JS assets are re-read from disk on every
+# request. Reusing a stale process therefore serves a NEW frontend against an OLD
+# API, and the missing route answers 501 with an HTML error page — which the
+# frontend then fails to parse as JSON. Version-gating the reuse turns that
+# confusing symptom into a silent, automatic restart.
+SERVICE_CAPABILITIES = (
+    "grapesjs-canvas",
+    "autosave",
+    "file-query",
+    "file-watch",
+    "stdlib-python",
+    "visual-context",
+)
 MAX_REQUEST_BYTES = 8 * 1024 * 1024
 SCRIPT_PATTERN = re.compile(r"^<script\b[\s\S]*</script\s*>$", re.IGNORECASE)
+
+# ── Visual selection context ────────────────────────────────────────────────
+# Anchors are resolved against the on-disk source, never against the GrapesJS
+# canvas DOM: the agent edits the file, so every coordinate it receives must be
+# a real offset in that file. Identity attributes are ordered by how durable
+# they are across an agent rewrite. `data-wb-id` comes FIRST because we mint it
+# ourselves and it is human-readable ("card", "pricing-pro"); a page's `id` may
+# instead be a random token GrapesJS generated for its own style rules, which
+# tells the agent nothing about what the user picked.
+IDENTITY_ATTRIBUTES = ("data-wb-id", "id", "data-mode")
+# Wrappers that carry no meaning on their own; a rectangle hit that lands on
+# one of these is usually the user pointing at its parent.
+TRANSPARENT_TAGS = {"span", "em", "strong", "b", "i", "u", "small", "svg", "path", "g", "circle", "rect", "use", "defs", "line", "polyline", "polygon", "tspan", "br"}
+MAX_CONTEXT_SELECTIONS = 12
+MAX_SNIPPET_CHARS = 1600
+MAX_CONTEXT_BYTES = 24_000
+WB_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+
 GRAPESJS_VERSION = "0.23.4"
 VENDOR_ASSETS = {
     "grapes.min.js": {
@@ -465,10 +502,657 @@ def revision_of(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
+# ── Visual selection anchors ────────────────────────────────────────────────
+#
+# The agent edits the file on disk, so a selection is only useful if it can be
+# translated into *source* coordinates. The canvas DOM is a GrapesJS runtime
+# model and must never be treated as the authority here: the browser reports
+# WHICH node the user picked, and this module re-parses the on-disk source to
+# decide WHERE that node lives.
+#
+# Resolution is deliberately conservative. An anchor is only accepted when it
+# maps to exactly one source node; zero and multiple matches are both refused
+# so an ambiguous anchor can never reach the agent.
+
+
+def source_body(parser: SourceHtmlParser) -> HtmlNode | None:
+    return next((node for node in parser.nodes if node.tag == "body"), None)
+
+
+def parse_document_tree(source: str) -> tuple[SourceHtmlParser, HtmlNode]:
+    parser = SourceHtmlParser(source)
+    try:
+        parser.feed(source)
+        parser.close()
+    except Exception as caught:
+        raise WorkbenchError("INVALID_DOCUMENT", f"HTML 解析失败：{caught}", 400) from caught
+    body = source_body(parser)
+    if body is None:
+        raise WorkbenchError("INVALID_DOCUMENT", "目标必须是包含 body 的完整 HTML 文档。", 400)
+    return parser, body
+
+
+def structural_children(node: HtmlNode) -> list[HtmlNode]:
+    """Element children as the *editor* sees them.
+
+    `parse_source` strips body `<script>` elements before handing the document
+    to GrapesJS, so the canvas child indices skip them. The structural fallback
+    path must use the same numbering or every index after an inline script
+    would be off by one.
+    """
+    return [child for child in node.children if child.tag != "script"]
+
+
+def node_path(node: HtmlNode, body: HtmlNode) -> list[int] | None:
+    path: list[int] = []
+    current = node
+    while current is not body:
+        parent = current.parent
+        if parent is None:
+            return None
+        siblings = structural_children(parent)
+        if current not in siblings:
+            return None
+        path.append(siblings.index(current))
+        current = parent
+    path.reverse()
+    return path
+
+
+def node_at_path(body: HtmlNode, path: list[int]) -> HtmlNode | None:
+    current = body
+    for index in path:
+        siblings = structural_children(current)
+        if not isinstance(index, int) or index < 0 or index >= len(siblings):
+            return None
+        current = siblings[index]
+    return current if current is not body else None
+
+
+def line_of(parser: SourceHtmlParser, offset: int) -> int:
+    return bisect.bisect_right(parser.line_offsets, offset)
+
+
+def node_text(source: str, node: HtmlNode) -> str:
+    if node.end_start is None:
+        return ""
+    raw = source[node.start_end : node.end_start]
+    raw = re.sub(r"<script\b[\s\S]*?</script\s*>", " ", raw, flags=re.IGNORECASE)
+    raw = re.sub(r"<[^>]+>", " ", raw)
+    return re.sub(r"\s+", " ", html.unescape(raw)).strip()
+
+
+def identity_of(node: HtmlNode) -> dict[str, str] | None:
+    # Ordering does the work: `data-wb-id` is checked before `id`, so a random
+    # GrapesJS token only becomes the label when nothing better exists.
+    for name in IDENTITY_ATTRIBUTES:
+        value = node.attrs.get(name)
+        if value:
+            return {"name": name, "value": value}
+    return None
+
+
+def selector_of(node: HtmlNode) -> str:
+    identity = identity_of(node)
+    if identity is None:
+        classes = [item for item in node.attrs.get("class", "").split() if item]
+        return node.tag + "".join(f".{item}" for item in classes[:2])
+    if identity["name"] == "id":
+        return f"#{identity['value']}"
+    return f'[{identity["name"]}="{identity["value"]}"]'
+
+
+def normalized_text(value: str) -> str:
+    return re.sub(r"\s+", " ", value or "").strip()
+
+
+def resolve_anchor(parser: SourceHtmlParser, body: HtmlNode, descriptor: dict[str, Any]) -> HtmlNode:
+    """Map a browser-side selection descriptor onto exactly one source node."""
+    if not isinstance(descriptor, dict):
+        raise WorkbenchError("INVALID_ANCHOR", "选区描述必须是对象。", 400)
+
+    expected_tag = str(descriptor.get("tag") or "").lower() or None
+    raw_path = descriptor.get("path")
+    path = [item for item in raw_path if isinstance(item, int)] if isinstance(raw_path, list) else None
+    if isinstance(raw_path, list) and path is not None and len(path) != len(raw_path):
+        path = None
+    text_hint = normalized_text(str(descriptor.get("textHint") or ""))
+
+    identity = descriptor.get("identity")
+    candidates: list[HtmlNode] = []
+    strategy = ""
+
+    if isinstance(identity, dict) and identity.get("name") in IDENTITY_ATTRIBUTES and identity.get("value"):
+        name = str(identity["name"])
+        value = str(identity["value"])
+        candidates = [
+            node for node in parser.nodes
+            if node.is_inside(body) and node.attrs.get(name) == value
+        ]
+        strategy = "identity"
+
+    if len(candidates) != 1 and path is not None:
+        # Either the identity was absent or it was ambiguous; the structural
+        # path can both stand alone and disambiguate an identity collision.
+        located = node_at_path(body, path)
+        if located is not None:
+            if len(candidates) > 1 and located in candidates:
+                candidates = [located]
+                strategy = "identity+path"
+            elif not candidates:
+                candidates = [located]
+                strategy = "path"
+
+    if not candidates:
+        raise WorkbenchError(
+            "ANCHOR_NOT_FOUND",
+            "选中的元素在当前磁盘文件中已不存在，请重新选择。",
+            409,
+        )
+    if len(candidates) > 1:
+        raise WorkbenchError(
+            "ANCHOR_AMBIGUOUS",
+            f"选中的元素在源文件中匹配到 {len(candidates)} 个节点，无法唯一定位。",
+            409,
+        )
+
+    node = candidates[0]
+    if expected_tag and node.tag != expected_tag:
+        raise WorkbenchError(
+            "ANCHOR_NOT_FOUND",
+            f"定位到的节点是 <{node.tag}>，与选中的 <{expected_tag}> 不一致，请重新选择。",
+            409,
+        )
+    if text_hint and strategy in {"path", "identity+path"}:
+        # A path is only as good as the tree it was computed against. When the
+        # caller supplied visible text, require it to still overlap.
+        #
+        # Compare with whitespace REMOVED, not merely collapsed. `node_text`
+        # replaces each tag with a space, so `<h3>专业版</h3><p>￥99</p>` becomes
+        # "专业版 ￥99", while the browser's `textContent` yields "专业版￥99" — the
+        # same content, differing only where markup used to be. Comparing those
+        # literally rejects every correct anchor in tightly-written HTML.
+        actual = collapse_for_comparison(node_text(parser.source, node))
+        probe = collapse_for_comparison(text_hint)[:40]
+        if probe and probe not in actual and actual[:40] not in probe:
+            raise WorkbenchError(
+                "ANCHOR_NOT_FOUND",
+                "定位到的节点内容与选中的元素不一致，请重新选择。",
+                409,
+            )
+    return node
+
+
+def collapse_for_comparison(value: str) -> str:
+    return re.sub(r"\s+", "", value or "")
+
+
+def describe_anchor(parser: SourceHtmlParser, body: HtmlNode, node: HtmlNode) -> dict[str, Any]:
+    source = parser.source
+    end = node.end_end if node.end_end is not None else node.start_end
+    snippet = source[node.start : end]
+    truncated = len(snippet) > MAX_SNIPPET_CHARS
+    if truncated:
+        head = snippet[: MAX_SNIPPET_CHARS // 2].rstrip()
+        tail = snippet[-(MAX_SNIPPET_CHARS // 4) :].lstrip()
+        snippet = f"{head}\n<!-- … 省略 {len(source[node.start:end]) - len(head) - len(tail)} 字符 … -->\n{tail}"
+
+    ancestors: list[str] = []
+    current = node.parent
+    while current is not None and current is not body:
+        ancestors.append(selector_of(current))
+        current = current.parent
+    ancestors.reverse()
+
+    behavior = {
+        name: value for name, value in node.attrs.items()
+        if name in {"data-action", "data-target"} or name.lower().startswith("on")
+    }
+
+    return {
+        "tag": node.tag,
+        "selector": selector_of(node),
+        "identity": identity_of(node),
+        "path": node_path(node, body),
+        "lineStart": line_of(parser, node.start),
+        "lineEnd": line_of(parser, max(node.start, end - 1)),
+        "startOffset": node.start,
+        "endOffset": end,
+        "text": node_text(source, node)[:240],
+        "classes": [item for item in node.attrs.get("class", "").split() if item],
+        "attributes": {name: value for name, value in node.attrs.items() if name != "class"},
+        "behavior": behavior,
+        "ancestors": ancestors,
+        "snippet": snippet,
+        "snippetTruncated": truncated,
+    }
+
+
+# ── Related style and behaviour evidence ────────────────────────────────────
+#
+# "Make this purple" only needs the element and its CSS. "Improve this
+# interaction" needs the JavaScript that drives it — and `parse_source` keeps
+# body scripts out of the editable model, so that code has to be recovered from
+# the raw source separately.
+
+STYLE_BLOCK_PATTERN = re.compile(r"<style\b([^>]*)>([\s\S]*?)</style\s*>", re.IGNORECASE)
+SCRIPT_BLOCK_PATTERN = re.compile(r"<script\b([^>]*)>([\s\S]*?)</script\s*>", re.IGNORECASE)
+AT_RULE_PATTERN = re.compile(r"@[a-zA-Z-]+")
+
+
+def split_css_rules(css: str, base_offset: int) -> list[dict[str, Any]]:
+    """Split a stylesheet into top-level rules, keeping source offsets.
+
+    A hand-rolled brace scanner rather than a regex: nested at-rules such as
+    `@media` contain their own blocks, and a flat regex would cut them in half.
+    """
+    rules: list[dict[str, Any]] = []
+    depth = 0
+    start = 0
+    index = 0
+    length = len(css)
+    while index < length:
+        char = css[index]
+        if char == "/" and css.startswith("/*", index):
+            closing = css.find("*/", index + 2)
+            index = length if closing == -1 else closing + 2
+            continue
+        if char in {'"', "'"}:
+            quote = char
+            index += 1
+            while index < length and css[index] != quote:
+                index += 2 if css[index] == "\\" else 1
+            index += 1
+            continue
+        if char == "{":
+            if depth == 0:
+                prelude = css[start:index]
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth <= 0:
+                depth = 0
+                body = css[start : index + 1]
+                selector = normalized_text(re.sub(r"/\*[\s\S]*?\*/", " ", prelude))
+                if selector:
+                    rules.append({
+                        "selector": selector,
+                        "text": body.strip(),
+                        "start": base_offset + start,
+                        "end": base_offset + index + 1,
+                    })
+                start = index + 1
+        index += 1
+    return rules
+
+
+def document_css_rules(source: str) -> list[dict[str, Any]]:
+    rules: list[dict[str, Any]] = []
+    for match in STYLE_BLOCK_PATTERN.finditer(source):
+        if "data-grapesjs-overrides" in match.group(1):
+            continue
+        rules.extend(split_css_rules(match.group(2), match.start(2)))
+    return rules
+
+
+def selector_tokens(node: HtmlNode) -> set[str]:
+    tokens = {node.tag}
+    for item in node.attrs.get("class", "").split():
+        if item:
+            tokens.add(f".{item}")
+    identity = node.attrs.get("id")
+    if identity:
+        tokens.add(f"#{identity}")
+    # Attribute selectors, i.e. every identity attribute except `id`, which is
+    # already covered by the `#` form above.
+    for name in IDENTITY_ATTRIBUTES:
+        if name != "id" and node.attrs.get(name):
+            tokens.add(f"[{name}")
+    return tokens
+
+
+def related_css(parser: SourceHtmlParser, source: str, nodes: list[HtmlNode], rules: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Rules whose selector mentions a class/id/tag carried by the selection.
+
+    Deliberately a *superset* heuristic. Missing a rule would make the agent
+    invent CSS that already exists; including one extra rule only costs a few
+    tokens. Bare tag names are ignored unless the element has no class or id,
+    because `p { }` matches almost everything.
+    """
+    wanted: set[str] = set()
+    tag_only: set[str] = set()
+    for node in nodes:
+        tokens = selector_tokens(node)
+        specific = {token for token in tokens if token.startswith((".", "#", "["))}
+        if specific:
+            wanted |= specific
+        else:
+            tag_only.add(node.tag)
+
+    matched: list[dict[str, Any]] = []
+    for rule in rules:
+        selector = rule["selector"]
+        if AT_RULE_PATTERN.match(selector):
+            # Keep at-rules only when their body mentions a wanted token, so a
+            # responsive override for the selection still travels with it.
+            if not any(token in rule["text"] for token in wanted):
+                continue
+        elif not any(token in selector for token in wanted):
+            bare = {part.strip() for part in re.split(r"[\s,>+~]+", selector) if part.strip()}
+            if not (tag_only & bare):
+                continue
+        matched.append({
+            "selector": selector,
+            "lineStart": line_of(parser, rule["start"]),
+            "lineEnd": line_of(parser, max(rule["start"], rule["end"] - 1)),
+            "text": rule["text"] if len(rule["text"]) <= 600 else rule["text"][:600] + "\n  /* … */\n}",
+        })
+    return matched[:14]
+
+
+def related_scripts(parser: SourceHtmlParser, source: str, nodes: list[HtmlNode]) -> list[dict[str, Any]]:
+    """Script blocks that reference an identifier carried by the selection."""
+    needles: set[str] = set()
+    for node in nodes:
+        for name in IDENTITY_ATTRIBUTES:
+            value = node.attrs.get(name)
+            if value:
+                needles.add(value)
+        for name in ("data-action", "data-target"):
+            value = node.attrs.get(name)
+            if value:
+                needles.add(value)
+        for item in node.attrs.get("class", "").split():
+            if item:
+                needles.add(item)
+    if not needles:
+        return []
+
+    blocks: list[dict[str, Any]] = []
+    for match in SCRIPT_BLOCK_PATTERN.finditer(source):
+        code = match.group(2)
+        if not code.strip():
+            continue
+        hits = sorted({needle for needle in needles if needle in code})
+        if not hits:
+            continue
+        blocks.append({
+            "lineStart": line_of(parser, match.start()),
+            "lineEnd": line_of(parser, max(match.start(), match.end() - 1)),
+            "matches": hits,
+            "text": code.strip() if len(code.strip()) <= 2400 else code.strip()[:2400] + "\n/* … */",
+        })
+    return blocks[:3]
+
+
+# ── Stable identity promotion ───────────────────────────────────────────────
+#
+# Most elements carry neither `id` nor `data-wb-id`, so their only anchor is a
+# structural path — which dies the moment the agent rewrites that subtree. On
+# selection the workbench therefore writes a readable `data-wb-id` into the
+# source. This is not pollution: `data-wb-id` is already the project's own
+# contract for addressing elements (see the editable-HTML guidelines), so
+# promoting a selection moves the page *towards* the spec rather than away.
+
+STOPWORD_SLUGS = {"the", "and", "for", "with", "you", "your", "our", "this", "that", "from", "are", "was"}
+
+
+def slugify(value: str, fallback: str) -> str:
+    ascii_value = re.sub(r"[^a-z0-9]+", "-", (value or "").lower()).strip("-")
+    words = [word for word in ascii_value.split("-") if word and word not in STOPWORD_SLUGS]
+    slug = "-".join(words[:4])[:40].strip("-")
+    return slug or fallback
+
+
+def suggest_wb_id(node: HtmlNode, taken: set[str]) -> str:
+    classes = [item for item in node.attrs.get("class", "").split() if item]
+    seeds = [
+        slugify(classes[0], "") if classes else "",
+        slugify(node_text_seed(node), ""),
+        node.tag,
+    ]
+    base = next((seed for seed in seeds if seed), node.tag)
+    if not base.startswith(node.tag) and base != node.tag:
+        base = f"{base}"
+    candidate = base
+    counter = 2
+    while candidate in taken:
+        candidate = f"{base}-{counter}"
+        counter += 1
+    return candidate
+
+
+def node_text_seed(node: HtmlNode) -> str:
+    for name in ("aria-label", "alt", "title", "name", "data-action"):
+        value = node.attrs.get(name)
+        if value:
+            return value
+    return ""
+
+
+def existing_wb_ids(parser: SourceHtmlParser) -> set[str]:
+    taken: set[str] = set()
+    for node in parser.nodes:
+        for name in ("id", "data-wb-id"):
+            value = node.attrs.get(name)
+            if value:
+                taken.add(value)
+    return taken
+
+
+def promote_identities(target: Path, descriptors: list[dict[str, Any]], base_revision: str) -> dict[str, Any]:
+    """Give every anchorless selection a durable `data-wb-id`, atomically."""
+    current = read_document(target)
+    if base_revision and current["revision"] != base_revision:
+        raise WorkbenchError("REVISION_CONFLICT", "磁盘文件已被外部修改，请重新加载后再试。", 409, document=current)
+
+    source = current["html"]
+    parser, body = parse_document_tree(source)
+    taken = existing_wb_ids(parser)
+    insertions: list[tuple[int, str]] = []
+    assigned: list[dict[str, Any]] = []
+
+    for descriptor in descriptors:
+        node = resolve_anchor(parser, body, descriptor)
+        identity = identity_of(node)
+        if identity is not None:
+            assigned.append({"identity": identity, "created": False})
+            continue
+        value = suggest_wb_id(node, taken)
+        taken.add(value)
+        # Insert just before the '>' that closes the start tag. Self-closing
+        # tags keep their slash, so target the last character of the raw tag.
+        raw = source[node.start : node.start_end]
+        offset = node.start + len(raw.rstrip()[:-1].rstrip("/").rstrip()) if raw.endswith(">") else node.start_end - 1
+        insertions.append((offset, f' data-wb-id="{html.escape(value, quote=True)}"'))
+        assigned.append({"identity": {"name": "data-wb-id", "value": value}, "created": True})
+
+    if not insertions:
+        return {"revision": current["revision"], "assigned": assigned, "changed": False}
+
+    updated = source
+    for offset, text in sorted(insertions, key=lambda item: item[0], reverse=True):
+        updated = updated[:offset] + text + updated[offset:]
+
+    latest = read_document(target)
+    if latest["revision"] != current["revision"]:
+        raise WorkbenchError("REVISION_CONFLICT", "写入期间文件发生外部修改，未覆盖最新版。", 409, document=latest)
+    write_atomic(target, updated)
+    return {"revision": revision_of(updated), "assigned": assigned, "changed": True}
+
+
+def write_atomic(target: Path, content: str) -> None:
+    temporary_name: str | None = None
+    try:
+        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.workbench-", suffix=".tmp", dir=target.parent)
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as output:
+            output.write(content)
+            output.flush()
+            os.fsync(output.fileno())
+        os.chmod(temporary_name, target.stat().st_mode)
+        os.replace(temporary_name, target)
+    finally:
+        if temporary_name and os.path.exists(temporary_name):
+            os.unlink(temporary_name)
+
+
+# ── Context packet ──────────────────────────────────────────────────────────
+
+
+def build_selection_context(target: Path, descriptors: list[dict[str, Any]]) -> dict[str, Any]:
+    if not isinstance(descriptors, list) or not descriptors:
+        raise WorkbenchError("INVALID_ANCHOR", "请至少选择一个元素。", 400)
+    if len(descriptors) > MAX_CONTEXT_SELECTIONS:
+        raise WorkbenchError("INVALID_ANCHOR", f"一次最多添加 {MAX_CONTEXT_SELECTIONS} 个元素。", 400)
+
+    document = read_document(target)
+    source = document["html"]
+    parser, body = parse_document_tree(source)
+
+    nodes = [resolve_anchor(parser, body, descriptor) for descriptor in descriptors]
+    # Drop selections already contained in another selection: sending both a
+    # section and its heading duplicates the source and blurs the instruction.
+    kept: list[HtmlNode] = []
+    for node in nodes:
+        if any(node is not other and node.is_inside(other) for other in nodes):
+            continue
+        if any(node is other for other in kept):
+            continue
+        kept.append(node)
+
+    selections = [describe_anchor(parser, body, node) for node in kept]
+    rules = document_css_rules(source)
+    payload = {
+        "filePath": document["filePath"],
+        "fileName": document["fileName"],
+        "revision": document["revision"],
+        "selections": selections,
+        "css": related_css(parser, source, kept, rules),
+        "scripts": related_scripts(parser, source, kept),
+        "collapsed": len(nodes) - len(kept),
+    }
+    payload["markdown"] = render_context_markdown(payload)
+    return payload
+
+
+def render_context_markdown(payload: dict[str, Any]) -> str:
+    """Render the packet the agent actually reads.
+
+    Optimised for an agent that cannot see the page: every selection leads with
+    how to find it again (anchor + line range) and only then describes what it
+    is. The literal source snippet is included so a string-replacing edit tool
+    has an exact `old_string` to match.
+    """
+    lines: list[str] = []
+    lines.append("## 视觉选区（HTML Workbench）")
+    lines.append("")
+    lines.append(f"- 文件：`{payload['filePath']}`")
+    lines.append(f"- revision：`{payload['revision'][:12]}`")
+    lines.append(f"- 选中元素：{len(payload['selections'])} 个（编辑态框选）")
+    lines.append("")
+    lines.append("用户在页面上直接选中了下列元素。后续指令中的「这个 / 这里 / 这块」均指这些元素。")
+    lines.append("")
+
+    for index, item in enumerate(payload["selections"], start=1):
+        marker = f"### {index}. `{item['selector']}`"
+        lines.append(marker)
+        lines.append("")
+        identity = item.get("identity")
+        if identity:
+            lines.append(f"- 稳定锚点：`[{identity['name']}=\"{identity['value']}\"]`")
+        else:
+            lines.append("- 稳定锚点：无（该元素没有 id / data-wb-id）")
+        lines.append(f"- 源码位置：第 {item['lineStart']}–{item['lineEnd']} 行")
+        if item["ancestors"]:
+            lines.append(f"- 层级：`{' > '.join(item['ancestors'][-4:])} > {item['selector']}`")
+        if item["text"]:
+            lines.append(f"- 可见文本：{item['text']}")
+        if item["behavior"]:
+            behavior = " ".join(f'{name}="{value}"' for name, value in item["behavior"].items())
+            lines.append(f"- 行为属性：`{behavior}`")
+        lines.append("")
+        lines.append("```html")
+        lines.append(item["snippet"])
+        lines.append("```")
+        lines.append("")
+
+    if payload["css"]:
+        lines.append("### 关联样式规则")
+        lines.append("")
+        for rule in payload["css"]:
+            lines.append(f"`{rule['selector']}` — 第 {rule['lineStart']}–{rule['lineEnd']} 行")
+            lines.append("")
+            lines.append("```css")
+            lines.append(rule["text"])
+            lines.append("```")
+            lines.append("")
+
+    if payload["scripts"]:
+        lines.append("### 关联脚本")
+        lines.append("")
+        for block in payload["scripts"]:
+            hits = "、".join(f"`{item}`" for item in block["matches"][:6])
+            lines.append(f"第 {block['lineStart']}–{block['lineEnd']} 行，引用了 {hits}")
+            lines.append("")
+            lines.append("```js")
+            lines.append(block["text"])
+            lines.append("```")
+            lines.append("")
+
+    lines.append("### 修改约束")
+    lines.append("")
+    lines.append("- 只修改上述选区及其关联样式 / 脚本区间，页面其余部分保持不变。")
+    lines.append("- 优先用稳定锚点定位；不要依赖 `nth-child`、兄弟顺序或行号硬编码。")
+    lines.append("- 编辑前请重新读取该文件：用户可能在此期间继续做了可视化修改。")
+    lines.append("")
+
+    markdown = "\n".join(lines)
+    if len(markdown.encode("utf-8")) > MAX_CONTEXT_BYTES:
+        encoded = markdown.encode("utf-8")[:MAX_CONTEXT_BYTES]
+        markdown = encoded.decode("utf-8", "ignore") + "\n\n<!-- 上下文过长，已截断 -->\n"
+    return markdown
+
+
+
+
+
+def normalize_file_reference(raw_file: str) -> str:
+    """Turn a browser `file://` URL into the platform's local path string.
+
+    The address bar accepts both a normal filesystem path and a URL copied from
+    Finder/Explorer/browser. `Path('file:///…%E4…')` is not a URL parser: it
+    keeps the scheme and percent escapes literally, which made a valid existing
+    file look missing. Decode it here, at the service boundary shared by every
+    API and CLI command.
+    """
+    value = raw_file.strip()
+    parsed = urllib.parse.urlsplit(value)
+    if parsed.scheme.lower() != "file":
+        return value
+    if parsed.query or parsed.fragment:
+        raise WorkbenchError("INVALID_FILE_URL", "file:// 地址不能包含 query 或 hash。", 400)
+
+    host = parsed.netloc.lower()
+    path = urllib.parse.unquote(parsed.path)
+    if host not in {"", "localhost"}:
+        if os.name != "nt":
+            raise WorkbenchError("INVALID_FILE_URL", "当前系统只支持本机 file:// 地址。", 400)
+        # file://server/share/page.html → \\server\share\page.html on Windows.
+        path = f"//{parsed.netloc}{path}"
+    elif os.name == "nt" and re.match(r"^/[A-Za-z]:/", path):
+        # URL syntax requires a leading slash before a Windows drive: file:///C:/…
+        path = path[1:]
+
+    if not path:
+        raise WorkbenchError("INVALID_FILE_URL", "file:// 地址未包含文件路径。", 400)
+    return path
+
+
 def resolve_html_file(raw_file: str) -> Path:
     if not raw_file.strip():
         raise WorkbenchError("FILE_REQUIRED", "请通过 file 参数指定 HTML 文件。", 400)
-    requested = Path(raw_file).expanduser()
+    normalized = normalize_file_reference(raw_file)
+    requested = Path(normalized).expanduser()
     try:
         target = requested.resolve(strict=True)
     except FileNotFoundError as caught:
@@ -622,7 +1306,7 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                     "version": SERVICE_VERSION,
                     "port": self.server.server_port,
                     "editorRoot": str(self.server.editor_root),
-                    "capabilities": ["grapesjs-canvas", "autosave", "file-query", "file-watch", "stdlib-python"],
+                    "capabilities": list(SERVICE_CAPABILITIES),
                 })
                 return
             if parsed.path == "/api/document":
@@ -651,16 +1335,53 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
             self.send_json(404, {"error": "NOT_FOUND", "message": "接口不存在。"})
             return
         try:
-            length = int(self.headers.get("Content-Length", "0"))
-            if length <= 0 or length > MAX_REQUEST_BYTES:
-                raise WorkbenchError("INVALID_SAVE", "保存请求大小无效。", 400)
-            body = json.loads(self.rfile.read(length).decode("utf-8"))
+            body = self.read_json_body()
             query = urllib.parse.parse_qs(parsed.query)
             self.send_json(200, save_document(self.query_file(query), body))
         except json.JSONDecodeError as caught:
             self.send_error_payload(WorkbenchError("INVALID_SAVE", f"保存请求不是有效 JSON：{caught}", 400))
         except Exception as caught:
             self.send_error_payload(caught)
+
+    def do_POST(self) -> None:
+        parsed = urllib.parse.urlsplit(self.path)
+        query = urllib.parse.parse_qs(parsed.query)
+        try:
+            if parsed.path == "/api/shutdown":
+                # Lets a newer `open` retire this process cleanly. The service
+                # holds no state of its own, so exiting is always safe.
+                self.send_json(200, {"ok": True, "stopping": True})
+                threading.Thread(target=self.server.shutdown, daemon=True).start()
+                return
+            if parsed.path not in {"/api/context", "/api/anchor"}:
+                self.send_json(404, {"error": "NOT_FOUND", "message": "接口不存在。"})
+                return
+            body = self.read_json_body()
+            target = self.query_file(query)
+            selections = body.get("selections")
+            if parsed.path == "/api/anchor":
+                # Identity promotion mutates the file, so it is a separate,
+                # explicitly revision-checked step ahead of context building.
+                if not isinstance(selections, list) or not selections:
+                    raise WorkbenchError("INVALID_ANCHOR", "请至少选择一个元素。", 400)
+                if len(selections) > MAX_CONTEXT_SELECTIONS:
+                    raise WorkbenchError("INVALID_ANCHOR", f"一次最多添加 {MAX_CONTEXT_SELECTIONS} 个元素。", 400)
+                self.send_json(200, promote_identities(target, selections, str(body.get("baseRevision") or "")))
+                return
+            self.send_json(200, build_selection_context(target, selections))
+        except json.JSONDecodeError as caught:
+            self.send_error_payload(WorkbenchError("INVALID_ANCHOR", f"请求不是有效 JSON：{caught}", 400))
+        except Exception as caught:
+            self.send_error_payload(caught)
+
+    def read_json_body(self) -> dict[str, Any]:
+        length = int(self.headers.get("Content-Length", "0"))
+        if length <= 0 or length > MAX_REQUEST_BYTES:
+            raise WorkbenchError("INVALID_SAVE", "请求大小无效。", 400)
+        payload = json.loads(self.rfile.read(length).decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise WorkbenchError("INVALID_SAVE", "请求体必须是 JSON 对象。", 400)
+        return payload
 
     def send_asset(self, route: str) -> None:
         parts = route.split("/", 3)
@@ -710,6 +1431,111 @@ def health(port: int, timeout: float = 0.5) -> dict[str, Any] | None:
         return None
 
 
+def is_reusable(payload: dict[str, Any] | None) -> bool:
+    """Whether a live service speaks the same API as this script.
+
+    A process serves the code it was started with, but serves assets from disk.
+    So an old process + new assets is the worst combination: the UI offers
+    features whose routes answer 501. Require every capability this script
+    advertises before reusing.
+    """
+    if not payload:
+        return False
+    advertised = payload.get("capabilities")
+    if not isinstance(advertised, list):
+        return False
+    return set(SERVICE_CAPABILITIES).issubset({str(item) for item in advertised})
+
+
+def stop_service(port: int, timeout: float = 6.0) -> bool:
+    """Ask an outdated service to exit, then free its TCP listener.
+
+    Before 2.1.0 there was no shutdown route. Also, a failed/foreign listener
+    can hold the port without answering health: a health failure is *not* proof
+    that binding will succeed. We therefore wait for the actual listener to go
+    away, and use the native process terminator on each platform as a fallback.
+    """
+    try:
+        request = urllib.request.Request(f"http://127.0.0.1:{port}/api/shutdown", method="POST")
+        urllib.request.urlopen(request, timeout=timeout).close()
+    except (OSError, ValueError, urllib.error.URLError):
+        pass
+    if wait_for_port_free(port, 2.0):
+        return True
+    for pid in listeners_on_port(port):
+        terminate_process(pid)
+    return wait_for_port_free(port, timeout)
+
+
+def wait_for_port_free(port: int, timeout: float) -> bool:
+    """Wait until no process is listening, including unhealthy listeners."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not listeners_on_port(port):
+            return True
+        time.sleep(0.1)
+    return not listeners_on_port(port)
+
+
+def listeners_on_port(port: int) -> list[int]:
+    """Return PIDs listening on a local TCP port, best-effort on every OS.
+
+    macOS/Linux use lsof. Windows ships `netstat` and exposes the PID in its
+    final column, avoiding an optional Python dependency such as psutil.
+    """
+    try:
+        if os.name == "nt":
+            result = subprocess.run(
+                ["netstat", "-ano", "-p", "tcp"],
+                capture_output=True, text=True, timeout=5,
+            )
+            pids = []
+            for line in result.stdout.splitlines():
+                columns = line.split()
+                # TCP  127.0.0.1:4317  0.0.0.0:0  LISTENING  1234
+                if len(columns) < 5 or columns[0].upper() != "TCP" or columns[3].upper() != "LISTENING":
+                    continue
+                local = columns[1].rsplit(":", 1)
+                if len(local) != 2 or local[1] != str(port):
+                    continue
+                try:
+                    pid = int(columns[-1])
+                except ValueError:
+                    continue
+                if pid != os.getpid():
+                    pids.append(pid)
+            return pids
+        result = subprocess.run(
+            ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    pids = []
+    for line in result.stdout.split():
+        try:
+            pid = int(line)
+        except ValueError:
+            continue
+        if pid != os.getpid():
+            pids.append(pid)
+    return pids
+
+
+def terminate_process(pid: int) -> None:
+    """Best-effort process-tree termination on the current platform."""
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                capture_output=True, text=True, timeout=5,
+            )
+        else:
+            os.kill(pid, signal.SIGTERM)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
 def start_detached(script_file: Path, port: int, editor_root: Path, asset_file: Path | None, vendor_cache: Path, log_dir: Path) -> tuple[int, Path]:
     directory = Path(log_dir).expanduser()
     directory.mkdir(parents=True, exist_ok=True)
@@ -751,6 +1577,17 @@ def command_open(args: argparse.Namespace, script_file: Path) -> int:
     editor_root = Path(args.editor_root).expanduser().resolve(strict=True)
     resolve_html_file(str(target))
     existing = health(args.port)
+    if existing is not None and not is_reusable(existing):
+        # Same port, older code: retire it rather than serve a new UI against a
+        # stale API. Nothing is lost — the service keeps no state of its own.
+        stop_service(args.port)
+        existing = health(args.port)
+        if existing is not None:
+            raise WorkbenchError(
+                "SERVER_OUTDATED",
+                f"端口 {args.port} 上有旧版服务且无法自动停止，请手动结束该进程后重试。",
+                500,
+            )
     reused = existing is not None
     pid: int | None = None
     log_file: Path | None = None
@@ -796,7 +1633,26 @@ def build_parser() -> argparse.ArgumentParser:
 
     health_command = subparsers.add_parser("health", help="check the local service")
     health_command.add_argument("--port", type=int, default=DEFAULT_PORT)
+
+    stop_command = subparsers.add_parser("stop", help="retire whatever service holds the port")
+    stop_command.add_argument("--port", type=int, default=DEFAULT_PORT)
     return parser
+
+
+def command_stop(args: argparse.Namespace) -> int:
+    """Free the port so a fresh service can bind it.
+
+    Callers use this to recover from `PORT_IN_USE`, where the listener is a
+    process they do not own (a leftover from an earlier run, or an outdated
+    version). Succeeding when nothing is listening keeps it safe to call blindly.
+    """
+    if health(args.port) is None and not listeners_on_port(args.port):
+        print(json.dumps({"ok": True, "port": args.port, "stopped": False, "reason": "NOTHING_LISTENING"}, ensure_ascii=False))
+        return 0
+    if stop_service(args.port):
+        print(json.dumps({"ok": True, "port": args.port, "stopped": True}, ensure_ascii=False))
+        return 0
+    raise WorkbenchError("SERVER_OUTDATED", f"端口 {args.port} 上的进程无法停止，请手动结束后重试。", 500)
 
 
 def main() -> int:
@@ -810,6 +1666,8 @@ def main() -> int:
             return command_serve(args, script_file)
         if args.command == "open":
             return command_open(args, script_file)
+        if args.command == "stop":
+            return command_stop(args)
         payload = health(args.port)
         print(json.dumps(payload or {"ok": False, "error": "SERVER_UNAVAILABLE"}, ensure_ascii=False))
         return 0 if payload else 1

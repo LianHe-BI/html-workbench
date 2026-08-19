@@ -243,6 +243,12 @@ class HttpTests(unittest.TestCase):
             self.assertIn("immutable", response.headers["Cache-Control"])
 
 
+HEALTHY_PAYLOAD = {
+    "service": workbench.SERVICE_NAME,
+    "capabilities": list(workbench.SERVICE_CAPABILITIES),
+}
+
+
 class OpenCommandTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -264,7 +270,7 @@ class OpenCommandTests(unittest.TestCase):
 
     def test_open_reuses_healthy_service_without_starting_again(self):
         output = io.StringIO()
-        with mock.patch.object(workbench, "health", return_value={"service": workbench.SERVICE_NAME}), \
+        with mock.patch.object(workbench, "health", return_value=HEALTHY_PAYLOAD), \
              mock.patch.object(workbench, "start_detached") as start, \
              contextlib.redirect_stdout(output):
             self.assertEqual(workbench.command_open(self.args, MODULE_PATH), 0)
@@ -275,7 +281,7 @@ class OpenCommandTests(unittest.TestCase):
 
     def test_open_starts_service_when_no_healthy_service_exists(self):
         output = io.StringIO()
-        with mock.patch.object(workbench, "health", side_effect=[None, {"service": workbench.SERVICE_NAME}]), \
+        with mock.patch.object(workbench, "health", side_effect=[None, HEALTHY_PAYLOAD]), \
              mock.patch.object(workbench, "start_detached", return_value=(12345, self.root / "service.log")) as start, \
              contextlib.redirect_stdout(output):
             self.assertEqual(workbench.command_open(self.args, MODULE_PATH), 0)
@@ -284,8 +290,176 @@ class OpenCommandTests(unittest.TestCase):
         self.assertEqual(payload["pid"], 12345)
         start.assert_called_once()
 
+    # A long-lived service keeps running the code it was started with, but serves
+    # HTML/JS from disk on every request. Reusing an old process therefore feeds a
+    # NEW frontend to an OLD API, and the missing route answers 501 with an HTML
+    # error page that the frontend cannot parse as JSON. These tests pin the gate
+    # that makes `open` retire such a process instead of reusing it.
+    def test_open_refuses_to_reuse_service_missing_a_capability(self):
+        stale = {"service": workbench.SERVICE_NAME, "capabilities": ["grapesjs-canvas", "autosave"]}
+        output = io.StringIO()
+        with mock.patch.object(workbench, "health", side_effect=[stale, None, HEALTHY_PAYLOAD]), \
+             mock.patch.object(workbench, "stop_service", return_value=True) as stop, \
+             mock.patch.object(workbench, "start_detached", return_value=(999, self.root / "service.log")) as start, \
+             contextlib.redirect_stdout(output):
+            self.assertEqual(workbench.command_open(self.args, MODULE_PATH), 0)
+        stop.assert_called_once()
+        start.assert_called_once()
+        self.assertFalse(json.loads(output.getvalue())["reused"])
 
-class LoggingTests(unittest.TestCase):
+    def test_open_fails_loudly_when_outdated_service_will_not_stop(self):
+        stale = {"service": workbench.SERVICE_NAME, "capabilities": []}
+        with mock.patch.object(workbench, "health", return_value=stale), \
+             mock.patch.object(workbench, "stop_service", return_value=False), \
+             mock.patch.object(workbench, "start_detached") as start:
+            with self.assertRaises(workbench.WorkbenchError) as caught:
+                workbench.command_open(self.args, MODULE_PATH)
+        self.assertEqual(caught.exception.code, "SERVER_OUTDATED")
+        start.assert_not_called()
+
+    def test_is_reusable_requires_every_advertised_capability(self):
+        self.assertTrue(workbench.is_reusable(HEALTHY_PAYLOAD))
+        # A future service may advertise more; that is still compatible.
+        self.assertTrue(workbench.is_reusable({"capabilities": list(workbench.SERVICE_CAPABILITIES) + ["future"]}))
+        self.assertFalse(workbench.is_reusable({"capabilities": []}))
+        self.assertFalse(workbench.is_reusable({}))
+        self.assertFalse(workbench.is_reusable(None))
+
+
+class StopCommandTests(unittest.TestCase):
+    """`stop` exists so a caller can recover from PORT_IN_USE.
+
+    The listener is often a process the caller does not own (a leftover from an
+    earlier run), so the plugin calls this blindly before spawning. That makes
+    "nothing was listening" a SUCCESS, not an error.
+    """
+
+    def test_stop_succeeds_when_nothing_listens(self):
+        args = SimpleNamespace(port=4318)
+        output = io.StringIO()
+        with mock.patch.object(workbench, "health", return_value=None), \
+             mock.patch.object(workbench, "listeners_on_port", return_value=[]), \
+             mock.patch.object(workbench, "stop_service") as stop, \
+             contextlib.redirect_stdout(output):
+            self.assertEqual(workbench.command_stop(args), 0)
+        payload = json.loads(output.getvalue())
+        self.assertTrue(payload["ok"])
+        self.assertFalse(payload["stopped"])
+        stop.assert_not_called()
+
+    def test_stop_retires_a_live_service(self):
+        args = SimpleNamespace(port=4318)
+        output = io.StringIO()
+        with mock.patch.object(workbench, "health", return_value=HEALTHY_PAYLOAD), \
+             mock.patch.object(workbench, "stop_service", return_value=True) as stop, \
+             contextlib.redirect_stdout(output):
+            self.assertEqual(workbench.command_stop(args), 0)
+        self.assertTrue(json.loads(output.getvalue())["stopped"])
+        stop.assert_called_once_with(4318)
+
+    def test_stop_kills_a_listener_that_fails_health(self):
+        # A half-dead process still holds the port, so binding would fail. It must
+        # be retired even though `health` cannot reach it.
+        args = SimpleNamespace(port=4318)
+        output = io.StringIO()
+        with mock.patch.object(workbench, "health", return_value=None), \
+             mock.patch.object(workbench, "listeners_on_port", return_value=[4242]), \
+             mock.patch.object(workbench, "stop_service", return_value=True) as stop, \
+             contextlib.redirect_stdout(output):
+            self.assertEqual(workbench.command_stop(args), 0)
+        self.assertTrue(json.loads(output.getvalue())["stopped"])
+        stop.assert_called_once()
+
+    def test_stop_reports_failure_when_the_port_stays_busy(self):
+        args = SimpleNamespace(port=4318)
+        with mock.patch.object(workbench, "health", return_value=HEALTHY_PAYLOAD), \
+             mock.patch.object(workbench, "stop_service", return_value=False):
+            with self.assertRaises(workbench.WorkbenchError) as caught:
+                workbench.command_stop(args)
+        self.assertEqual(caught.exception.code, "SERVER_OUTDATED")
+
+
+class CrossPlatformProcessTests(unittest.TestCase):
+    """The service is dependency-free, including on Windows.
+
+    DSH uses the same `stop` recovery path everywhere, so a Windows port holder
+    must be visible and terminable without relying on Unix-only `lsof`/signals.
+    """
+
+    def test_windows_listener_parser_reads_netstat_listening_pid(self):
+        netstat = """\
+  Proto  Local Address          Foreign Address        State           PID
+  TCP    127.0.0.1:4317         0.0.0.0:0              LISTENING       9123
+  TCP    127.0.0.1:9999         0.0.0.0:0              LISTENING       4567
+  TCP    [::]:4317              [::]:0                 LISTENING       9124
+  TCP    127.0.0.1:4317         127.0.0.1:55555        ESTABLISHED     9999
+"""
+        result = SimpleNamespace(stdout=netstat)
+        with mock.patch.object(workbench.os, "name", "nt"), \
+             mock.patch.object(workbench.subprocess, "run", return_value=result) as run, \
+             mock.patch.object(workbench.os, "getpid", return_value=1):
+            self.assertEqual(workbench.listeners_on_port(4317), [9123, 9124])
+        run.assert_called_once_with(
+            ["netstat", "-ano", "-p", "tcp"], capture_output=True, text=True, timeout=5,
+        )
+
+    def test_windows_terminate_uses_taskkill_for_the_process_tree(self):
+        with mock.patch.object(workbench.os, "name", "nt"), \
+             mock.patch.object(workbench.subprocess, "run") as run:
+            workbench.terminate_process(9123)
+        run.assert_called_once_with(
+            ["taskkill", "/PID", "9123", "/T", "/F"], capture_output=True, text=True, timeout=5,
+        )
+
+    def test_wait_for_port_free_does_not_treat_unhealthy_listener_as_free(self):
+        # Regression: health=None only says the service does not answer; it does
+        # NOT say TCP bind will work. We must wait for the listener to disappear.
+        with mock.patch.object(workbench, "listeners_on_port", side_effect=[[9123], []]), \
+             mock.patch.object(workbench.time, "sleep"):
+            self.assertTrue(workbench.wait_for_port_free(4317, 1.0))
+
+
+class FileReferenceTests(unittest.TestCase):
+    """Address-bar input accepts native paths and browser-copied file:// URLs."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.page = self.root / "含 空格.html"
+        self.page.write_text(SAMPLE_HTML, encoding="utf-8")
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def test_decodes_percent_encoded_file_url(self):
+        url = self.page.as_uri()
+        self.assertIn("%20", url)
+        self.assertEqual(workbench.normalize_file_reference(url), str(self.page))
+        self.assertEqual(workbench.resolve_html_file(url), self.page.resolve())
+
+    def test_native_path_is_unchanged(self):
+        self.assertEqual(workbench.normalize_file_reference(str(self.page)), str(self.page))
+
+    def test_rejects_file_url_with_query_or_hash(self):
+        for suffix in ("?version=2", "#section"):
+            with self.assertRaises(workbench.WorkbenchError) as caught:
+                workbench.normalize_file_reference(self.page.as_uri() + suffix)
+            self.assertEqual(caught.exception.code, "INVALID_FILE_URL")
+
+    def test_windows_drive_url_loses_leading_url_slash(self):
+        with mock.patch.object(workbench.os, "name", "nt"):
+            self.assertEqual(
+                workbench.normalize_file_reference("file:///C:/Users/Alice/page.html"),
+                "C:/Users/Alice/page.html",
+            )
+
+    def test_windows_unc_url_becomes_unc_path(self):
+        with mock.patch.object(workbench.os, "name", "nt"):
+            self.assertEqual(
+                workbench.normalize_file_reference("file://server/share/page.html"),
+                "//server/share/page.html",
+            )
+
     def test_default_log_dir_is_fixed_and_user_scoped(self):
         log_dir = workbench.default_log_dir()
         self.assertEqual(log_dir.name, "logs")

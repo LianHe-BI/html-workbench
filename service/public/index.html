@@ -101,6 +101,11 @@
         </div>
       </div>
     </section>
+
+    <!-- Selection now flows through GrapesJS's own element toolbar (an "add to
+         chat" arrow next to move/copy/delete), so there is no separate tray to
+         manage. All that is left is a transient toast for the outcome. -->
+    <output id="context-toast" class="context-toast" hidden aria-live="polite"></output>
   </main>
   <script src="/vendor/grapesjs/grapes.min.js"></script>
   <script type="module" src="/workbench.js"></script>

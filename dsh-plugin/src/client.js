@@ -35,7 +35,7 @@ return {
     // positioned chevron collapsing into a block below the input). So manage the
     // <style> element here: drop every previous generation, then insert fresh.
     const STYLE_MARK = 'data-hwb-styles'
-    const STYLE_VERSION = '2'
+    const STYLE_VERSION = '5'
 
     const CSS = `
 html #root {
@@ -80,6 +80,32 @@ header:has([data-slot="conversation.session.header.utilities"]) {
 .hwb-dot { position: relative; width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--dsw-alias-label-dimmed, var(--dsw-alias-label-tertiary)); box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 0%, transparent); }
 .hwb-dot[data-on] { background: var(--dsw-alias-state-success-primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--dsw-alias-state-success-primary) 16%, transparent); }
 .hwb-dot[data-off] { background: var(--dsw-alias-state-error-primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--dsw-alias-state-error-primary) 16%, transparent); }
+/* The dot is the ONLY signal that a start failed, so make it the way in: it is a
+   button that opens the diagnostics log. */
+.hwb-statusbtn { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 2px 6px 2px 4px; margin-left: -4px; border: 0; border-radius: 7px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.hwb-statusbtn:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.hwb-statusbtn:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary, #4d6bfe); outline-offset: 1px; }
+
+/* ── Diagnostics ──────────────────────────────────────────────────────────── */
+.hwb-diag { flex: none; display: flex; flex-direction: column; max-height: 46vh; border-bottom: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-1); }
+.hwb-diag-head { flex: none; display: flex; align-items: center; gap: 8px; padding: 8px 8px 8px 14px; border-bottom: 1px solid var(--dsw-alias-border-l2); }
+.hwb-diag-title { font-size: 12px; font-weight: 600; }
+.hwb-diag-facts { flex: none; display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; padding: 8px 14px; border-bottom: 1px solid var(--dsw-alias-border-l2); font-size: 11.5px; }
+.hwb-diag-key { color: var(--dsw-alias-label-tertiary); white-space: nowrap; }
+.hwb-diag-val { min-width: 0; font-family: var(--hwb-mono); word-break: break-all; }
+.hwb-diag-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 6px 0; }
+.hwb-diag-row { display: grid; grid-template-columns: auto 1fr; gap: 8px; padding: 4px 14px; font-size: 11.5px; line-height: 1.55; }
+.hwb-diag-row + .hwb-diag-row { border-top: 1px solid color-mix(in srgb, var(--dsw-alias-border-l2) 50%, transparent); }
+.hwb-diag-time { color: var(--dsw-alias-label-tertiary); font-family: var(--hwb-mono); font-size: 10.5px; padding-top: 1px; }
+.hwb-diag-msg { min-width: 0; }
+.hwb-diag-row[data-level="error"] .hwb-diag-msg { color: var(--dsw-alias-state-error-primary); }
+.hwb-diag-detail { display: block; margin-top: 3px; padding: 6px 8px; border-radius: 6px; background: var(--dsw-alias-bg-base); color: var(--dsw-alias-label-secondary); font-family: var(--hwb-mono); font-size: 10.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; max-height: 180px; overflow-y: auto; }
+.hwb-diag-empty { padding: 16px 14px; color: var(--dsw-alias-label-tertiary); font-size: 11.5px; }
+.hwb-diag-hint { padding: 8px 14px; border-top: 1px solid var(--dsw-alias-border-l2); color: var(--dsw-alias-label-tertiary); font-size: 11px; line-height: 1.6; }
+.hwb-diag-hint code { padding: 1px 4px; border-radius: 4px; background: var(--dsw-alias-bg-base); font-family: var(--hwb-mono); font-size: 10.5px; }
+.hwb-btn-quiet { background: transparent; border-color: var(--dsw-alias-border-l2); color: var(--dsw-alias-label-primary); }
+.hwb-btn-quiet:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); }
+.hwb-btn-sm { height: 26px; padding: 0 10px; border-radius: 7px; font-size: 11.5px; }
 .hwb-name { font-weight: 600; font-size: 13px; white-space: nowrap; }
 .hwb-sep { width: 1px; height: 14px; flex: none; background: var(--dsw-alias-border-l1); }
 .hwb-filechip { display: flex; align-items: center; gap: 6px; min-width: 0; height: 22px; padding: 0 8px; border-radius: 999px; background: var(--dsw-alias-bg-layer-2, var(--dsw-alias-interactive-bg-hover)); color: var(--dsw-alias-label-secondary); font-size: 11.5px; }
@@ -146,6 +172,33 @@ header:has([data-slot="conversation.session.header.utilities"]) {
 /* ── Body ─────────────────────────────────────────────────────────────────── */
 .hwb-body { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; background: var(--dsw-alias-bg-base); }
 .hwb-frame { flex: 1 1 auto; width: 100%; border: 0; background: #fff; }
+
+/* ── Visual selection chips (rendered INTO the host composer) ─────────────── */
+/* The workbench posts one selection at a time; each becomes a removable chip
+   above the chat input, mirroring how file attachments behave. The markdown
+   evidence is held in memory and only spliced into the message on send, so the
+   user never has to look at a wall of HTML while typing. */
+.hwb-chips {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  margin: 0 14px 8px; padding: 0;
+}
+.hwb-chip {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 260px;
+  padding: 3px 4px 3px 8px; border-radius: 8px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-primary);
+  font-size: 11.5px; line-height: 18px;
+}
+.hwb-chip > svg { flex: none; color: var(--dsw-alias-state-business-primary, #4d6bfe); }
+.hwb-chip-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--hwb-mono); }
+.hwb-chip-x {
+  flex: none; display: grid; place-items: center; width: 18px; height: 18px; padding: 0;
+  border: 0; border-radius: 5px; background: transparent;
+  color: var(--dsw-alias-label-tertiary); cursor: pointer;
+}
+.hwb-chip-x:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
+.hwb-chip-note { align-self: center; color: var(--dsw-alias-label-tertiary); font-size: 11px; }
 
 .hwb-center { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 24px; overflow-y: auto; text-align: center; }
 .hwb-blank { display: grid; place-items: center; width: 46px; height: 46px; border-radius: 14px; background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-tertiary); }
@@ -220,6 +273,10 @@ header:has([data-slot="conversation.session.header.utilities"]) {
       error: null,
       pathInput: '',
       resolveState: 'idle',
+      context: null,
+      diag: null,
+      diagOpen: false,
+      restarting: false,
       listeners: [],
       subscribe(fn) { this.listeners.push(fn); return () => { this.listeners = this.listeners.filter((f) => f !== fn) } },
       set(patch) {
@@ -270,6 +327,20 @@ header:has([data-slot="conversation.session.header.utilities"]) {
       return true
     }
 
+    // The panel polls `list` every few seconds and the payload now carries the
+    // whole diagnostics journal — a fresh object every tick. Compare by the
+    // facts that actually change so polling does not re-render continuously.
+    const sameDiag = (a, b) => {
+      if (a === b) return true
+      if (!a || !b) return false
+      const ja = a.journal || []
+      const jb = b.journal || []
+      if (ja.length !== jb.length) return false
+      if (ja.length && (ja[0].at !== jb[0].at || ja[0].message !== jb[0].message)) return false
+      return a.running === b.running && a.startError === b.startError
+        && a.processStatus === b.processStatus && a.exitCode === b.exitCode
+    }
+
     const refresh = (explicit) => {
       if (explicit) store.set({ refreshing: true })
       return host.call('list').then((res) => {
@@ -278,12 +349,28 @@ header:has([data-slot="conversation.session.header.utilities"]) {
           store.set({
             assets: sameAssets(store.assets, next) ? store.assets : next,
             running: !!res.running,
+            diag: sameDiag(store.diag, res) ? store.diag : res,
           })
         } else {
           store.set({ error: (res && res.error) || 'list failed' })
         }
       }).catch((e) => store.set({ error: String(e && e.message ? e.message : e) }))
         .then(() => { if (explicit) store.set({ refreshing: false }) })
+    }
+
+    // Killing and re-spawning is the one action that fixes most start failures,
+    // so it belongs next to the log that reports them.
+    const restartService = () => {
+      store.set({ restarting: true, error: null })
+      return host.call('restart').then((res) => {
+        store.set({
+          restarting: false,
+          running: !!(res && res.ok),
+          diag: (res && res.diagnostics) || store.diag,
+          error: res && res.ok ? null : (res && res.error) || '重启失败',
+        })
+        if (res && res.ok) refresh()
+      }).catch((e) => store.set({ restarting: false, error: String(e && e.message ? e.message : e) }))
     }
 
     const openFile = (path) => {
@@ -303,7 +390,15 @@ header:has([data-slot="conversation.session.header.utilities"]) {
             nonce: store.nonce + 1,
           })
         } else {
-          store.set({ loading: false, error: (res && res.error) || 'open failed' })
+          // A failed open used to collapse into one opaque line. The host now
+          // sends the journal along, so open the log on failure: the cause is
+          // one glance away instead of a terminal session away.
+          store.set({
+            loading: false,
+            error: (res && res.error) || 'open failed',
+            diag: (res && res.diagnostics) || store.diag,
+            diagOpen: !!(res && res.diagnostics),
+          })
         }
       }).catch((e) => store.set({ loading: false, error: String(e && e.message ? e.message : e) }))
     }
@@ -314,6 +409,204 @@ header:has([data-slot="conversation.session.header.utilities"]) {
       invalid: '仅支持 .html / .htm 文件',
       checking: '检测中…',
     }
+
+    // ── Visual selection → composer chips ────────────────────────────────────
+    //
+    // The workbench posts one selection per click. Each becomes a removable chip
+    // above the chat input, and the bulky markdown evidence stays in memory
+    // until the user actually sends — so they compose against a short list of
+    // labels instead of a wall of HTML.
+    //
+    // Two deliberate choices:
+    //  1. Chips are plain DOM appended into the host's composer card, not a
+    //     React portal. The card is a flex column owned by the host's React
+    //     tree; React leaves DOM nodes it never created alone, but it may
+    //     `insertBefore` around them, so a MutationObserver re-asserts position.
+    //  2. The evidence is spliced in during the CAPTURE phase of send. React 18
+    //     dispatches discrete events synchronously, so writing the value through
+    //     the native setter + `input` event during capture means React state is
+    //     already updated by the time the host's own handler reads it.
+
+    const CHIP_HOST = '.hwb-chips'
+    const pendingSelections = []
+    let chipRow = null
+    let composerObserver = null
+
+    const findComposer = () => {
+      const nodes = document.querySelectorAll('textarea')
+      for (let i = 0; i < nodes.length; i += 1) {
+        const node = nodes[i]
+        // The panel's own inputs are inside `.hwb-panel`; never target those.
+        if (node.closest('.hwb-panel')) continue
+        const box = node.getBoundingClientRect()
+        if (box.width >= 120 && box.height > 0) return node
+      }
+      return null
+    }
+
+    // The card is the flex column holding the textarea and the tool row. Walking
+    // up from the textarea keeps this working if the host renames its classes.
+    const findComposerCard = (textarea) => {
+      let node = textarea && textarea.parentElement
+      let depth = 0
+      while (node && depth < 6) {
+        const style = window.getComputedStyle(node)
+        if (style.display === 'flex' && style.flexDirection === 'column' && node.querySelector('button')) return node
+        node = node.parentElement
+        depth += 1
+      }
+      return textarea ? textarea.parentElement : null
+    }
+
+    const setComposerValue = (node, next) => {
+      const descriptor = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')
+      const setter = descriptor && descriptor.set
+      if (setter) setter.call(node, next)
+      else node.value = next
+      node.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+
+    const evidenceBlock = () => {
+      if (!pendingSelections.length) return ''
+      return pendingSelections.map((item) => item.markdown).join('\n')
+    }
+
+    const clearSelections = () => {
+      pendingSelections.length = 0
+      renderChips()
+    }
+
+    const removeSelection = (key) => {
+      const index = pendingSelections.findIndex((item) => item.key === key)
+      if (index >= 0) pendingSelections.splice(index, 1)
+      renderChips()
+    }
+
+    const chipIcon = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5v-3A1.5 1.5 0 0 1 4.5 3h3M16.5 3h3A1.5 1.5 0 0 1 21 4.5v3M21 16.5v3a1.5 1.5 0 0 1-1.5 1.5h-3M7.5 21h-3A1.5 1.5 0 0 1 3 19.5v-3"/></svg>'
+
+    const renderChips = () => {
+      const textarea = findComposer()
+      const card = findComposerCard(textarea)
+      if (!card) return
+      if (!pendingSelections.length) {
+        if (chipRow && chipRow.parentNode) chipRow.parentNode.removeChild(chipRow)
+        chipRow = null
+        return
+      }
+      if (!chipRow) {
+        chipRow = document.createElement('div')
+        chipRow.className = CHIP_HOST.slice(1)
+      }
+      chipRow.textContent = ''
+      pendingSelections.forEach((item) => {
+        const chip = document.createElement('span')
+        chip.className = 'hwb-chip'
+        chip.title = item.textHint ? item.label + ' — ' + item.textHint : item.label
+        chip.innerHTML = chipIcon
+        const label = document.createElement('span')
+        label.className = 'hwb-chip-label'
+        label.textContent = item.label
+        const close = document.createElement('button')
+        close.type = 'button'
+        close.className = 'hwb-chip-x'
+        close.setAttribute('aria-label', '移除 ' + item.label)
+        close.innerHTML = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>'
+        close.addEventListener('click', (event) => {
+          event.preventDefault()
+          event.stopPropagation()
+          removeSelection(item.key)
+        })
+        chip.appendChild(label)
+        chip.appendChild(close)
+        chipRow.appendChild(chip)
+      })
+      const note = document.createElement('span')
+      note.className = 'hwb-chip-note'
+      note.textContent = '发送时会自动附上选区源码'
+      chipRow.appendChild(note)
+
+      // Sit directly above the tool row (the last flex child), which puts the
+      // chips between the text input and the model/send controls.
+      const anchor = card.lastElementChild
+      if (chipRow.parentNode !== card || chipRow.nextElementSibling !== anchor) {
+        card.insertBefore(chipRow, anchor)
+      }
+      observeComposer(card)
+    }
+
+    const observeComposer = (card) => {
+      if (composerObserver) return
+      composerObserver = new MutationObserver(() => {
+        if (!pendingSelections.length) return
+        if (!chipRow || chipRow.parentNode !== card) renderChips()
+      })
+      composerObserver.observe(card, { childList: true })
+      ctx.effect(() => () => {
+        if (composerObserver) composerObserver.disconnect()
+        composerObserver = null
+      })
+    }
+
+    const receiveContext = (packet) => {
+      const key = packet.key || packet.label
+      const existing = pendingSelections.findIndex((item) => item.key === key)
+      const entry = {
+        key: key,
+        label: packet.label || 'element',
+        textHint: packet.textHint || '',
+        markdown: packet.markdown,
+        fileName: packet.fileName,
+      }
+      // Re-adding the same element refreshes its evidence rather than stacking a
+      // duplicate: the file may have changed since the first click.
+      if (existing >= 0) pendingSelections[existing] = entry
+      else pendingSelections.push(entry)
+      renderChips()
+      const textarea = findComposer()
+      if (textarea) textarea.focus()
+      store.set({ context: { count: pendingSelections.length, label: entry.label, at: Date.now() } })
+    }
+
+    // Splice the evidence in just before the host reads the composer, then drop
+    // the chips: the message now carries the context, so keeping them would
+    // silently re-attach the same source to the next turn.
+    const spliceEvidenceIntoMessage = () => {
+      if (!pendingSelections.length) return
+      const textarea = findComposer()
+      if (!textarea) return
+      const typed = (textarea.value || '').trim()
+      if (!typed) return
+      setComposerValue(textarea, evidenceBlock() + '\n' + typed)
+      clearSelections()
+    }
+
+    const bindSendInterception = () => {
+      const onClick = (event) => {
+        if (!pendingSelections.length) return
+        const target = event.target instanceof Element ? event.target : null
+        const button = target && target.closest('button')
+        if (!button || button.closest('.hwb-panel')) return
+        const label = button.getAttribute('aria-label') || ''
+        if (!/发送|send/i.test(label)) return
+        spliceEvidenceIntoMessage()
+      }
+      const onKeyDown = (event) => {
+        if (!pendingSelections.length) return
+        if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return
+        const target = event.target
+        if (!(target instanceof HTMLTextAreaElement) || target.closest('.hwb-panel')) return
+        spliceEvidenceIntoMessage()
+      }
+      document.addEventListener('click', onClick, true)
+      document.addEventListener('keydown', onKeyDown, true)
+      ctx.effect(() => () => {
+        document.removeEventListener('click', onClick, true)
+        document.removeEventListener('keydown', onKeyDown, true)
+      })
+    }
+
+    bindSendInterception()
+
 
     const checkPath = (value) => {
       const trimmed = (value || '').trim()
@@ -361,6 +654,79 @@ header:has([data-slot="conversation.session.header.utilities"]) {
       path('M8 21h8', 'c'),
       path('M12 18v3', 'd'),
     ])
+    const I_LOGS = icon(15, [path('M8 6h10', 'a'), path('M8 12h10', 'b'), path('M8 18h6', 'c'), path('M4 6h.01', 'd'), path('M4 12h.01', 'e'), path('M4 18h.01', 'f')])
+
+    // ── Diagnostics view ─────────────────────────────────────────────────────
+    //
+    // A start failure has exactly one visible symptom by default: a red dot. The
+    // cause lives in a Python traceback or a spawn error inside the host process,
+    // so surface it verbatim here — plus the facts needed to reproduce by hand
+    // (port, script path, exit code). That turns "服务起不来" into a fixable
+    // report without leaving the panel.
+
+    const clockTime = (at) => {
+      try {
+        return new Date(at).toLocaleTimeString('zh-CN', { hour12: false })
+      } catch (e) { return '' }
+    }
+
+    const Diagnostics = () => {
+      const s = useStore()
+      const d = s.diag
+      const journal = (d && d.journal) || []
+
+      const fact = (key, value) => value == null || value === ''
+        ? null
+        : [
+          React.createElement('span', { className: 'hwb-diag-key', key: key + '-k' }, key),
+          React.createElement('span', { className: 'hwb-diag-val', key: key + '-v' }, String(value)),
+        ]
+
+      return React.createElement('div', { className: 'hwb-diag' },
+        React.createElement('div', { className: 'hwb-diag-head' },
+          React.createElement('span', { className: 'hwb-diag-title' }, '服务诊断'),
+          React.createElement('span', { className: 'hwb-spacer' }),
+          React.createElement('button', {
+            type: 'button', className: 'hwb-btn hwb-btn-quiet hwb-btn-sm',
+            disabled: s.restarting, onClick: restartService,
+          }, s.restarting ? '重启中…' : '重启服务'),
+          React.createElement('button', {
+            type: 'button', className: 'hwb-icon', title: '收起诊断', 'aria-label': '收起诊断',
+            onClick: () => store.set({ diagOpen: false }),
+          }, I_CLOSE),
+        ),
+        d
+          ? React.createElement('div', { className: 'hwb-diag-facts' },
+            fact('状态', d.running ? '运行中' : (d.processStatus === 'running' ? '启动中' : '未就绪')),
+            fact('端口', d.port),
+            fact('进程', d.processStatus ? d.processStatus + (d.exitCode == null ? '' : '（exit=' + d.exitCode + '）') : '未由本插件启动'),
+            fact('失败原因', d.startError),
+            fact('脚本', d.script),
+            d.hasShell === false ? fact('shell', '不可用') : null,
+          )
+          : null,
+        React.createElement('div', { className: 'hwb-diag-body' },
+          journal.length
+            ? journal.map((entry, i) => React.createElement('div', {
+              className: 'hwb-diag-row', 'data-level': entry.level, key: String(entry.at) + '-' + i,
+            },
+              React.createElement('span', { className: 'hwb-diag-time' }, clockTime(entry.at)),
+              React.createElement('span', { className: 'hwb-diag-msg' },
+                entry.message,
+                entry.detail ? React.createElement('span', { className: 'hwb-diag-detail' }, entry.detail) : null,
+              ),
+            ))
+            : React.createElement('div', { className: 'hwb-diag-empty' }, '暂无日志。点「重启服务」可重新拉起并记录完整过程。'),
+        ),
+        React.createElement('div', { className: 'hwb-diag-hint' },
+          '服务自身日志：',
+          React.createElement('code', null, (d && d.logDir) || '/tmp/html-workbench-dsh/logs/'),
+          '；也可直接访问 ',
+          React.createElement('code', null, '/html-workbench/diagnostics'),
+          ' 查看原始 JSON。',
+        ),
+      )
+    }
 
     const STATE_ICON = { exists: I_CHECK, missing: I_MISSING, invalid: I_WARN, checking: I_LOADING }
 
@@ -415,6 +781,19 @@ header:has([data-slot="conversation.session.header.utilities"]) {
         return () => { if (dispose) dispose() }
       }, [s.open])
 
+      // The workbench runs in an iframe, so its selections arrive as messages.
+      // Bind while the panel is mounted, regardless of which file is open.
+      React.useEffect(() => {
+        const onMessage = (event) => {
+          const data = event.data
+          if (!data || data.type !== 'html-workbench:context') return
+          if (!data.markdown) return
+          receiveContext(data)
+        }
+        window.addEventListener('message', onMessage)
+        return () => window.removeEventListener('message', onMessage)
+      }, [])
+
       // Drop any in-flight path check when the panel closes.
       React.useEffect(() => () => { if (resolveTimer) { clearTimeout(resolveTimer); resolveTimer = null } }, [])
 
@@ -451,6 +830,9 @@ header:has([data-slot="conversation.session.header.utilities"]) {
         inMenu && a.kind ? React.createElement('span', { className: 'hwb-tag', 'data-kind': a.kind }, a.kind === 'create' ? '新建' : '编辑') : null,
       )
 
+      // A dead service makes "填入路径开始编辑" a lie — every open will fail.
+      // Say what is actually wrong and offer the two things that help.
+      const serviceDown = !s.running && !!s.diag && !s.loading
       const body = s.loading
         ? React.createElement('div', { className: 'hwb-center' },
           React.createElement('div', { className: 'hwb-spinner' }),
@@ -463,7 +845,26 @@ header:has([data-slot="conversation.session.header.utilities"]) {
             src: s.current.url,
             title: 'HTML Workbench — ' + basename(s.current.path),
           })
-          : React.createElement('div', { className: 'hwb-center' },
+          : serviceDown
+            ? React.createElement('div', { className: 'hwb-center' },
+              React.createElement('div', { className: 'hwb-blank' }, I_ALERT),
+              React.createElement('div', null,
+                React.createElement('div', { className: 'hwb-blank-title' }, '本地服务未就绪'),
+                React.createElement('div', { className: 'hwb-blank-desc' },
+                  s.diag.startError || '服务进程没有响应健康检查，暂时无法打开文件。'),
+              ),
+              React.createElement('div', { style: { display: 'flex', gap: '8px' } },
+                React.createElement('button', {
+                  type: 'button', className: 'hwb-btn hwb-btn-primary hwb-btn-sm',
+                  disabled: s.restarting, onClick: restartService,
+                }, s.restarting ? '重启中…' : '重启服务'),
+                React.createElement('button', {
+                  type: 'button', className: 'hwb-btn hwb-btn-quiet hwb-btn-sm',
+                  onClick: () => store.set({ diagOpen: true }),
+                }, '查看诊断日志'),
+              ),
+            )
+            : React.createElement('div', { className: 'hwb-center' },
             React.createElement('div', { className: 'hwb-blank' }, I_BLANK),
             React.createElement('div', null,
               React.createElement('div', { className: 'hwb-blank-title' }, '还没有打开文件'),
@@ -502,12 +903,17 @@ header:has([data-slot="conversation.session.header.utilities"]) {
 
         React.createElement('div', { className: 'hwb-chrome' },
           React.createElement('div', { className: 'hwb-idrow' },
-            React.createElement('div', { className: 'hwb-brand' },
+            React.createElement('button', {
+              type: 'button',
+              className: 'hwb-statusbtn',
+              'aria-expanded': !!s.diagOpen,
+              title: s.running ? '本地服务运行中 — 点击查看诊断' : '本地服务未就绪 — 点击查看原因',
+              onClick: () => store.set({ diagOpen: !s.diagOpen }),
+            },
               React.createElement('span', {
                 className: 'hwb-dot',
                 'data-on': s.running ? '' : undefined,
                 'data-off': !s.running ? '' : undefined,
-                title: s.running ? '本地服务运行中' : '本地服务未就绪',
               }),
               React.createElement('span', { className: 'hwb-name' }, 'HTML Workbench'),
             ),
@@ -517,6 +923,11 @@ header:has([data-slot="conversation.session.header.utilities"]) {
               : null,
             React.createElement('span', { className: 'hwb-spacer' }),
             React.createElement('div', { className: 'hwb-actions' },
+              React.createElement('button', {
+                type: 'button', className: 'hwb-icon', title: '服务诊断',
+                'aria-label': '服务诊断', 'aria-expanded': !!s.diagOpen,
+                onClick: () => store.set({ diagOpen: !s.diagOpen }),
+              }, I_LOGS),
               React.createElement('button', {
                 type: 'button', className: 'hwb-icon', title: '刷新产物列表',
                 'aria-label': '刷新产物列表', 'data-spin': s.refreshing ? '' : undefined,
@@ -594,11 +1005,17 @@ header:has([data-slot="conversation.session.header.utilities"]) {
             I_ALERT,
             React.createElement('span', { className: 'hwb-banner-text' }, s.error),
             React.createElement('button', {
+              type: 'button', className: 'hwb-icon', title: '查看诊断', 'aria-label': '查看诊断',
+              onClick: () => store.set({ diagOpen: true }),
+            }, I_LOGS),
+            React.createElement('button', {
               type: 'button', className: 'hwb-icon', title: '忽略', 'aria-label': '忽略',
               onClick: () => store.set({ error: null }),
             }, I_CLOSE),
           )
           : null,
+
+        s.diagOpen ? React.createElement(Diagnostics) : null,
 
         React.createElement('div', { className: 'hwb-body' }, body),
       )

@@ -133,6 +133,32 @@ button { -webkit-tap-highlight-color: transparent; }
 .actions .save-button:hover { color: #fff; background: #353532; }
 .actions button:disabled { opacity: .45; cursor: not-allowed; }
 
+/* ── Visual selection: "add to chat" outcome toast ────────────────────────── */
+/* The entry point lives in GrapesJS's own element toolbar (see
+   `addContextToolbarItem`), and the accumulated list lives in the chat
+   composer. All this file needs is transient feedback. */
+.context-toast {
+  position: absolute;
+  z-index: 34;
+  right: 14px;
+  bottom: 14px;
+  max-width: min(340px, calc(100% - 28px));
+  padding: 9px 13px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  color: #fff;
+  background: var(--ink);
+  box-shadow: var(--shadow);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.context-toast[data-state="error"] { color: #fff; background: var(--danger); border-color: transparent; }
+
+/* The toolbar button itself is inside GrapesJS's chrome, so it is styled with
+   the editor's own class rather than one of ours. */
+.gjs-toolbar-item svg { display: block; }
+
+
 .tool-rail {
   position: absolute;
   z-index: 28;
@@ -274,6 +300,7 @@ button { -webkit-tap-highlight-color: transparent; }
   .viewport-controls [data-width="375"], .viewport-controls [data-width="1280"] { display: none; }
   .toolbar-separator { margin-inline: 1px; }
   .actions #replace-image-button { display: none; }
+  .context-toast { right: 10px; left: 10px; max-width: none; }
 }
 
 </style>
@@ -372,6 +399,11 @@ button { -webkit-tap-highlight-color: transparent; }
         </div>
       </div>
     </section>
+
+    <!-- Selection now flows through GrapesJS's own element toolbar (an "add to
+         chat" arrow next to move/copy/delete), so there is no separate tray to
+         manage. All that is left is a transient toast for the outcome. -->
+    <output id="context-toast" class="context-toast" hidden aria-live="polite"></output>
   </main>
   <script src="/vendor/grapesjs/grapes.min.js"></script>
   <script type="module" data-bundle="workbench">
@@ -401,6 +433,7 @@ const hrefInput = document.querySelector('#href-input')
 const workbench = document.querySelector('.workbench')
 const modeButtons = [...document.querySelectorAll('[data-mode]')]
 const previewFrame = document.querySelector('#preview-frame')
+const contextToast = document.querySelector('#context-toast')
 
 let editor
 let activeFile = ''
@@ -408,6 +441,8 @@ let assetBase = ''
 let revision = ''
 let bodyScripts = []
 let sourceCss = ''
+let sourceBodyHtml = ''
+let sourceIdentityCache = null
 let links = []
 let headScripts = []
 let htmlAttributes = {}
@@ -423,6 +458,8 @@ let fitCanvas = true
 let activePanel = ''
 let panelPinned = false
 let workbenchMode = 'edit'
+let contextSending = false
+let contextToastTimer
 
 function setStatus(text, state = 'idle') {
   status.querySelector('b').textContent = text
@@ -432,6 +469,23 @@ function setStatus(text, state = 'idle') {
 
 function api(route) {
   return `${route}?file=${encodeURIComponent(activeFile)}`
+}
+
+// The HTML/JS assets are re-read from disk on every request, but a long-lived
+// service keeps running the Python it was started with. So a new frontend can
+// meet an old API, whose missing routes answer 501 with an HTML error page.
+// Parsing that as JSON reports "Unexpected token '<'" and buries the real cause,
+// so name it explicitly instead.
+async function readJson(response) {
+  const text = await response.text()
+  try {
+    return JSON.parse(text)
+  } catch (error) {
+    if (response.status === 501 || response.status === 404) {
+      throw new Error('本地服务是旧版本，缺少该接口。请重启 Workbench 服务后重试。')
+    }
+    throw new Error(`服务返回了非 JSON 响应（HTTP ${response.status}）。`)
+  }
 }
 
 function setFilePopover(open) {
@@ -662,6 +716,11 @@ async function injectSourceAssets() {
   interactionStyle.textContent = '[data-gjs-type="default"]:empty{pointer-events:none!important}'
   document.head.append(interactionStyle)
 
+  const contextStyle = document.createElement('style')
+  contextStyle.dataset.sourceAsset = 'true'
+  contextStyle.textContent = CONTEXT_CANVAS_CSS
+  document.head.append(contextStyle)
+
   if (!document.documentElement.dataset.workbenchInteractionBound) {
     document.documentElement.dataset.workbenchInteractionBound = 'true'
     document.addEventListener('click', (event) => {
@@ -678,6 +737,211 @@ async function injectSourceAssets() {
     }, true)
   }
 
+}
+
+// ── Visual selection context ────────────────────────────────────────────────
+//
+// The agent cannot see the page, so a selection is only useful if it can be
+// turned into coordinates in the file on disk. This half of the feature does
+// exactly one job: describe WHICH node the user picked, in terms the server can
+// re-resolve against the source. It deliberately does not try to locate source
+// offsets itself — the canvas DOM is GrapesJS's runtime model, not the file.
+//
+// The descriptor's `path` is the load-bearing part, because most elements have
+// no id. It MUST be numbered the same way the server numbers
+// `structural_children`: element children only, with `<script>` excluded. The
+// server strips body scripts before GrapesJS ever sees the document, so
+// counting them here would shift every index after an inline script and the
+// selection would silently land on its neighbour.
+
+// The entry point is GrapesJS's own element toolbar: selecting an element in the
+// canvas already shows move/copy/delete, so "add to chat" belongs right there
+// rather than behind a separate mode the user has to remember to turn on.
+
+const CONTEXT_CANVAS_CSS = `
+[data-wb-context-sent] {
+  animation: wb-context-flash 900ms ease-out;
+}
+@keyframes wb-context-flash {
+  from { box-shadow: 0 0 0 3px rgba(47, 77, 196, .55); }
+  to { box-shadow: 0 0 0 3px rgba(47, 77, 196, 0); }
+}
+`
+
+// Mirrors the server's `structural_children`: element children with `<script>`
+// excluded, because `parse_source` strips body scripts before GrapesJS ever sees
+// the document. Counting them would shift every index after an inline script.
+function structuralComponents(parent) {
+  const children = parent.components?.()
+  if (!children) return null
+  return children.filter((child) => child.get('tagName') !== 'script' && child.get('type') !== 'script')
+}
+
+// The path is computed over GrapesJS's COMPONENT tree, not the canvas DOM.
+// GrapesJS injects its own nodes as siblings of the user's content — a `<style>`
+// element plus `div.gjs-css-rules` and `div.gjs-js-cont` helpers — so walking the
+// live DOM yields `[1, 0, 1]` where the source body only knows `[0, 1]`, and the
+// server then resolves a different element or none at all. The component tree
+// contains exactly the document that was loaded from disk, so it lines up with
+// the server's `structural_children` numbering.
+function contextPathFor(element) {
+  const wrapper = editor?.getWrapper()
+  let component = componentFromCanvasElement(element)
+  if (!wrapper || !component) return null
+  const path = []
+  while (component !== wrapper) {
+    const parent = component.parent?.()
+    if (!parent) return null
+    const structural = structuralComponents(parent)
+    if (!structural) return null
+    const index = structural.indexOf(component)
+    if (index < 0) return null
+    path.push(index)
+    component = parent
+  }
+  return path.reverse()
+}
+
+// Mirrors the server's IDENTITY_ATTRIBUTES ordering: our own `data-wb-id` is
+// preferred because it is readable, whereas a page `id` may be a random token.
+const GRAPESJS_ID_PATTERN = /^i[a-z0-9]{4,6}$/
+
+function identityFor(element) {
+  for (const name of ['data-wb-id', 'id', 'data-mode']) {
+    const value = element.getAttribute(name)
+    if (!value) continue
+    if (name === 'id') {
+      // GrapesJS mints `id` attributes for its own style rules. Those ids do not
+      // exist in the source file, so trusting one would make the server look for
+      // a node that is not there. Only accept an id the source actually has —
+      // and skip the generated-looking ones even then, because an earlier bug may
+      // have persisted one and it would make a useless anchor label.
+      if (!sourceHasIdentity(name, value)) continue
+      if (GRAPESJS_ID_PATTERN.test(value)) continue
+    }
+    return { name, value }
+  }
+  return null
+}
+
+// GrapesJS-generated ids are absent from the document we loaded from disk, so
+// compare against the source body we were given rather than the live canvas.
+function sourceHasIdentity(name, value) {
+  if (!sourceIdentityCache) {
+    const holder = document.implementation.createHTMLDocument('source')
+    holder.body.innerHTML = sourceBodyHtml
+    sourceIdentityCache = new Set()
+    holder.body.querySelectorAll('[id], [data-wb-id], [data-mode]').forEach((node) => {
+      for (const attribute of ['id', 'data-wb-id', 'data-mode']) {
+        const found = node.getAttribute(attribute)
+        if (found) sourceIdentityCache.add(`${attribute}=${found}`)
+      }
+    })
+  }
+  return sourceIdentityCache.has(`${name}=${value}`)
+}
+
+function describeSelection(element) {
+  const path = contextPathFor(element)
+  if (!path) return null
+  const label = element.getAttribute('data-wb-id')
+    || element.getAttribute('id')
+    || [...element.classList].slice(0, 2).map((item) => `.${item}`).join('')
+    || element.tagName.toLowerCase()
+  return {
+    key: path.join('-'),
+    tag: element.tagName.toLowerCase(),
+    path,
+    identity: identityFor(element),
+    textHint: (element.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80),
+    label,
+    element,
+  }
+}
+
+function showContextToast(message, state = 'info') {
+  contextToast.hidden = false
+  contextToast.dataset.state = state
+  contextToast.textContent = message
+  clearTimeout(contextToastTimer)
+  contextToastTimer = setTimeout(() => { contextToast.hidden = true }, state === 'error' ? 6000 : 2600)
+}
+
+function flashContextElement(element) {
+  if (!element?.isConnected) return
+  element.removeAttribute('data-wb-context-sent')
+  // Force a reflow so re-adding the attribute restarts the animation even when
+  // the same element is sent twice in a row.
+  void element.offsetWidth
+  element.setAttribute('data-wb-context-sent', '')
+  setTimeout(() => element.removeAttribute('data-wb-context-sent'), 1000)
+}
+
+// Adds the currently selected element to the chat. One element per click keeps
+// the mental model simple: the toolbar acts on exactly what the user just
+// clicked, and the accumulating list lives in the composer where they can see
+// and remove entries.
+async function sendSelectionToChat(element) {
+  if (contextSending) return
+  const described = describeSelection(element)
+  if (!described) return showContextToast('该元素无法定位，请选择它的父级区域。', 'error')
+
+  contextSending = true
+  setStatus('正在生成上下文', 'saving')
+  try {
+    // Adding visual context must be read-only. A structural path plus the
+    // verbatim source snippet is already sufficient evidence for the agent;
+    // trying to mint `data-wb-id` here turns an otherwise harmless toolbar click
+    // into a disk write, which fails for a valid file opened outside DSH's
+    // workspace-write sandbox. Durable identities remain an optional future
+    // save-time enhancement — never a prerequisite for putting context in chat.
+    const selection = {
+      tag: described.tag,
+      path: described.path,
+      identity: described.identity,
+      textHint: described.textHint,
+    }
+
+    const response = await fetch(api('/api/context'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ selections: [selection] }),
+    })
+    const packet = await readJson(response)
+    if (!response.ok) throw new Error(packet.message || packet.error)
+    publishContext(packet)
+    flashContextElement(element)
+    showContextToast(`已添加 ${packet.selections[0]?.selector || described.label} 到对话`)
+    setStatus('已添加到对话上下文', 'saved')
+  } catch (error) {
+    showContextToast(error.message || '生成上下文失败，请重新选择。', 'error')
+    setStatus('添加到对话失败', 'error')
+  } finally {
+    contextSending = false
+  }
+}
+
+// The workbench runs inside an iframe in the DSH panel. Hand the packet to the
+// host when there is one; fall back to the clipboard for a standalone browser.
+function publishContext(packet) {
+  const first = packet.selections[0] || {}
+  const message = {
+    type: 'html-workbench:context',
+    filePath: packet.filePath,
+    fileName: packet.fileName,
+    revision: packet.revision,
+    // A stable key lets the host de-duplicate: clicking the same element twice
+    // should not stack two identical chips in the composer.
+    key: first.identity ? `${first.identity.name}=${first.identity.value}` : `path:${(first.path || []).join('-')}`,
+    label: first.selector || first.tag || 'element',
+    textHint: first.text || '',
+    markdown: packet.markdown,
+  }
+  if (window.parent !== window) {
+    window.parent.postMessage(message, '*')
+    return
+  }
+  navigator.clipboard?.writeText(packet.markdown).catch(() => {})
 }
 
 function initEditor() {
@@ -710,14 +974,47 @@ function initEditor() {
     canvas: { frameStyle: 'html{background:#f4f4f5}body{min-height:100vh}' },
   })
   window.__GRAPESJS_WORKBENCH__ = { editor }
+  editor.Commands.add(CONTEXT_TOOLBAR_COMMAND, {
+    run(instance, sender, options = {}) {
+      const component = options.component || instance.getSelected()
+      const element = component?.getEl?.()
+      if (element) void sendSelectionToChat(element)
+    },
+  })
   editor.on('load', () => void injectSourceAssets())
   editor.on('update', scheduleSave)
   // GrapesJS 的 RTE 文本编辑走 storeData → sync:content（noCount:true）路径，
   // 不触发 editor 的 'update' 事件（changesCount 不增加）。但组件模型的
   // Backbone change 事件不受 noCount 影响，会转发为 component:update，
   // 因此补充监听该事件以覆盖文本内容编辑场景。
-  editor.on('component:update', scheduleSave)
+  editor.on('component:update', scheduleSaveForContentChange)
   editor.on('component:selected', updateAttributePanel)
+  editor.on('component:selected', addContextToolbarItem)
+}
+
+// GrapesJS builds a component's toolbar lazily on first selection, so extend it
+// here rather than at init: the array already holds move/copy/delete and we only
+// prepend one item. Guarded by a marker command name so re-selecting the same
+// component never stacks duplicates.
+const CONTEXT_TOOLBAR_COMMAND = 'wb-context-add'
+
+function addContextToolbarItem(component) {
+  if (!component || typeof component.get !== 'function') return
+  const toolbar = component.get('toolbar')
+  if (!Array.isArray(toolbar)) return
+  if (toolbar.some((item) => item.command === CONTEXT_TOOLBAR_COMMAND)) return
+  // `silent` matters: a normal `set` emits `component:update`, which is wired to
+  // `scheduleSave`. Without it, merely SELECTING an element would mark the
+  // document dirty and write GrapesJS's own minted attributes (e.g. `id="iftsf"`,
+  // created for its style rules) into the user's source file.
+  component.set('toolbar', [{
+    id: CONTEXT_TOOLBAR_COMMAND,
+    command: CONTEXT_TOOLBAR_COMMAND,
+    attributes: { title: '添加到对话上下文', 'aria-label': '将选中元素添加到对话上下文' },
+    // A speech bubble reads as “conversation” at toolbar size; the small plus
+    // distinguishes “add this selection to chat” from a generic comment action.
+    label: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px"><path d="M20 11.3a7.2 7.2 0 0 1-7.5 7.2 8.2 8.2 0 0 1-3.3-.7L4 20l1.8-4.3A6.8 6.8 0 0 1 5 12a7.2 7.2 0 0 1 7.5-7.2 7.2 7.2 0 0 1 7.5 6.5Z"/><path d="M15.8 7.4v4.2M13.7 9.5h4.2"/></svg>',
+  }, ...toolbar], { silent: true })
 }
 
 function updateAttributePanel(component) {
@@ -732,6 +1029,22 @@ function updateAttributePanel(component) {
   srcInput.value = attributes.src || ''
   altInput.value = attributes.alt || ''
   hrefInput.value = attributes.href || ''
+}
+
+// Editor-state properties that GrapesJS stores on the component model but which
+// say nothing about the document: `open` is the layer tree's expand state,
+// `toolbar`/`status`/`selected` are selection chrome. They fire the same
+// `component:update` event as a real content edit, and letting them reach
+// autosave means merely CLICKING an element rewrites the user's file — which is
+// how GrapesJS's internally-minted `id="i4nxl"` style-rule attributes ended up
+// persisted in the source.
+const NON_CONTENT_PROPERTIES = new Set(['open', 'status', 'toolbar', 'selected', 'hovered', 'highlightable', 'draggable'])
+
+function scheduleSaveForContentChange(component) {
+  const changed = Object.keys(component?.changed || {})
+  // An empty `changed` is a bulk/unknown update; be conservative and save.
+  if (changed.length && changed.every((key) => NON_CONTENT_PROPERTIES.has(key))) return
+  scheduleSave()
 }
 
 function scheduleSave() {
@@ -757,7 +1070,7 @@ async function save() {
         bodyScripts,
       }),
     })
-    const result = await response.json()
+    const result = await readJson(response)
     if (response.status === 409) {
       setStatus('磁盘有更新，已停止覆盖', 'conflict')
       dirty = false
@@ -780,6 +1093,8 @@ async function applyDocument(document) {
   revision = document.revision
   bodyScripts = document.bodyScripts || []
   sourceCss = document.sourceCss || ''
+  sourceBodyHtml = document.bodyHtml || ''
+  sourceIdentityCache = null
   links = document.links || []
   headScripts = document.headScripts || []
   htmlAttributes = document.htmlAttributes || {}
@@ -808,7 +1123,7 @@ async function loadFile(file = activeFile) {
   try {
     activeFile = file
     const response = await fetch(api('/api/document'))
-    const document = await response.json()
+    const document = await readJson(response)
     if (!response.ok) throw new Error(document.message || document.error)
     await applyDocument(document)
     dirty = false

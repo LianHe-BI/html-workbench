@@ -9,11 +9,16 @@
  * specific machine — and handed to the shared body as `config.script`.
  */
 import { readFileSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { tmpdir } from 'node:os'
+import { dirname, resolve, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const scriptPath = resolve(here, '..', 'scripts', 'workbench.py')
+// Runtime state must be writable from DSH's workspace-write sandbox. `tmpdir()`
+// is platform-aware: /tmp on macOS/Linux, %TEMP% on Windows. The content is only
+// logs and a re-downloadable GrapesJS cache, so it is deliberately ephemeral.
+const runtimeDir = join(tmpdir(), 'html-workbench-dsh')
 
 // The body is a `return { ... }` statement; wrap it in a function and call it.
 // eslint-disable-next-line no-new-func
@@ -22,6 +27,10 @@ const plugin = makePlugin()
 
 export const name = 'html-workbench'
 export const inject = plugin.inject ?? []
-// Inject the portably-resolved script path; a deployment-provided config may
-// still override `script` / `editorRoot` / `port`.
-export const apply = (ctx, config) => plugin.apply(ctx, { script: scriptPath, ...(config || {}) })
+// Inject paths resolved by Node rather than assuming POSIX separators. A
+// deployment-provided config may still override every value.
+export const apply = (ctx, config) => plugin.apply(ctx, {
+  script: scriptPath,
+  runtimeDir,
+  ...(config || {}),
+})
